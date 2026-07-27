@@ -109,7 +109,7 @@
         </section>
     </div>
 
-    <script src="../cloud-config.js?v=20260727a"></script>
+    <script src="../cloud-config.js?v=20260727p"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
         const historyAdminState = {
@@ -224,7 +224,13 @@
                 return;
             }
 
-            const authClient = window.supabase.createClient(String(config.baseUrl).replace(/\/$/, ''), config.anonKey);
+            const authClient = window.supabase.createClient(String(config.baseUrl).replace(/\/$/, ''), config.anonKey, {
+                auth: {
+                    persistSession: true,
+                    autoRefreshToken: true,
+                    detectSessionInUrl: true
+                }
+            });
             const { data: sessionData } = await authClient.auth.getSession();
             const accessToken = sessionData?.session?.access_token || '';
             if (config.requireAuth && !accessToken) {
@@ -360,7 +366,13 @@
             }
 
             try {
-                const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey);
+                const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey, {
+                    auth: {
+                        persistSession: true,
+                        autoRefreshToken: true,
+                        detectSessionInUrl: true
+                    }
+                });
                 const { data: sessionData } = await client.auth.getSession();
                 const accessToken = sessionData?.session?.access_token || '';
                 const email = String(sessionData?.session?.user?.email || '').toLowerCase();
@@ -403,7 +415,13 @@
             const requiresGuard = Boolean(cfg.enabled && cfg.requireAuth && cfg.baseUrl && cfg.anonKey);
             if (!requiresGuard || !window.supabase || typeof window.supabase.createClient !== 'function') return;
 
-            const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey);
+            const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey, {
+                auth: {
+                    persistSession: true,
+                    autoRefreshToken: true,
+                    detectSessionInUrl: true
+                }
+            });
             const { data: sessionData } = await client.auth.getSession();
             const accessToken = sessionData?.session?.access_token || '';
             const email = String(sessionData?.session?.user?.email || '').toLowerCase();
