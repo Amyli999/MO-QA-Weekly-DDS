@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DDS history</title>
+    <link rel="stylesheet" href="../css/style.css?v=20260727o">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="hero">
+            <div>
+                <p class="eyebrow">CN MO QA Weekly DDS</p>
+                <h1>DDS history</h1>
+                <p class="subtitle">Historical notes and removed closed items from DDS dashboard.</p>
+            </div>
+        </header>
+
+        <nav class="top-nav">
+            <a href="../index.html">DDS Dashboard</a>
+            <a class="active" href="history.html">DDS history</a>
+            <a href="masterplan.html">Master Plan</a>
+            <a id="admin-nav-link" href="admin.html">Admin</a>
+        </nav>
+
+        <div id="page-access-message" class="permission-banner"></div>
+
+        <section class="card">
+            <div class="section-header">
+                <div>
+                    <h2>Module 1. General information notes</h2>
+                    <p>Week column and notes details from dashboard historical snapshots.</p>
+                </div>
+            </div>
+
+            <div class="table-wrapper">
+                <table class="data-table history-notes-table">
+                    <thead>
+                        <tr>
+                            <th>Week</th>
+                            <th>Notes details</th>
+                            <th class="history-admin-col">Command</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-notes-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="section-header">
+                <div>
+                    <h2>Module 2. DDS trigger notes</h2>
+                    <p>Read from dashboard Trigger Details when closed items are removed from active list.</p>
+                </div>
+            </div>
+
+            <div class="table-wrapper">
+                <table class="data-table detail-table history-detail-table">
+                    <colgroup>
+                        <col class="history-week-col">
+                        <col class="detail-col-1">
+                        <col class="detail-col-2">
+                        <col class="detail-col-3">
+                        <col class="detail-col-4">
+                        <col class="detail-col-5">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>Week</th>
+                            <th>Trigger Detail</th>
+                            <th>Next Step</th>
+                            <th>Assign To</th>
+                            <th>Due Date</th>
+                            <th>Status</th>
+                            <th class="history-admin-col">Command</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-trigger-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="section-header">
+                <div>
+                    <h2>Module 3. DDS other follow ups</h2>
+                    <p>Read from dashboard Other Follow Ups when closed items are removed from active list.</p>
+                </div>
+            </div>
+
+            <div class="table-wrapper">
+                <table class="data-table followup-table history-followup-table">
+                    <thead>
+                        <tr>
+                            <th>Week</th>
+                            <th>Bucket</th>
+                            <th>Task Name</th>
+                            <th>Comments</th>
+                            <th>Assign To</th>
+                            <th>Due Date</th>
+                            <th>Status</th>
+                            <th class="history-admin-col">Command</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-followup-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <script src="../cloud-config.js?v=20260727a"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        const historyAdminState = {
+            canDelete: false
+        };
+
+        function loadState(key, fallback) {
+            try {
+                const value = localStorage.getItem(key);
+                return value ? JSON.parse(value) : fallback;
+            } catch (error) {
+                return fallback;
+            }
+        }
+
+        function saveState(key, value) {
+            localStorage.setItem(key, JSON.stringify(value));
+        }
+
+        function createCell(text) {
+            const td = document.createElement('td');
+            td.textContent = text || '';
+            return td;
+        }
+
+        function createDeleteCell(onDelete) {
+            const td = document.createElement('td');
+            td.className = 'history-admin-col';
+
+            if (historyAdminState.canDelete) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'history-delete-btn';
+                button.textContent = 'Delete';
+                button.addEventListener('click', onDelete);
+                td.appendChild(button);
+            }
+
+            return td;
+        }
+
+        function getColspan(baseColumns) {
+            return baseColumns + (historyAdminState.canDelete ? 1 : 0);
+        }
+
+        function applyDeleteVisibility() {
+            document.body.classList.toggle('history-admin-enabled', historyAdminState.canDelete);
+        }
+
+        function removeNotesForEntry(entryIndex) {
+            const archive = loadState('weeklyDDSHistoryArchive', []);
+            const target = archive[entryIndex];
+            if (!target) return;
+            target.generalNotes = {};
+            saveState('weeklyDDSHistoryArchive', archive);
+            renderHistoryArchive();
+        }
+
+        function removeRemovedItem(entryIndex, removedIndex) {
+            const archive = loadState('weeklyDDSHistoryArchive', []);
+            const target = archive[entryIndex];
+            if (!target || !Array.isArray(target.removedItems)) return;
+
+            target.removedItems.splice(removedIndex, 1);
+            saveState('weeklyDDSHistoryArchive', archive);
+            renderHistoryArchive();
+        }
+
+        function appendEmptyRow(tbody, colspan, message) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = colspan;
+            cell.className = 'history-empty-cell';
+            cell.textContent = message;
+            row.appendChild(cell);
+            tbody.appendChild(row);
+        }
+
+        function normalizeWeekLabel(entry) {
+            return String(entry?.weekLabel || entry?.weekKey || '').trim() || 'Unknown week';
+        }
+
+        function buildNotesText(entry) {
+            const notes = entry?.generalNotes;
+            if (!notes) return '';
+
+            if (typeof notes === 'string') {
+                return notes.trim();
+            }
+
+            if (typeof notes === 'object') {
+                if (typeof notes['combined-notes'] === 'string' && notes['combined-notes'].trim()) {
+                    return notes['combined-notes'].trim();
+                }
+
+                return Object.values(notes)
+                    .map((value) => String(value || '').trim())
+                    .filter(Boolean)
+                    .join('\n\n');
+            }
+
+            return '';
+        }
+
+        async function bootstrapHistoryArchiveFromCloud() {
+            const config = window.DDS_CLOUD_CONFIG || {};
+            if (!config.enabled || !config.baseUrl || !config.anonKey) {
+                return;
+            }
+
+            if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+                return;
+            }
+
+            const authClient = window.supabase.createClient(String(config.baseUrl).replace(/\/$/, ''), config.anonKey);
+            const { data: sessionData } = await authClient.auth.getSession();
+            const accessToken = sessionData?.session?.access_token || '';
+            if (config.requireAuth && !accessToken) {
+                return;
+            }
+
+            const workspaceId = String(config.workspaceId || 'cn-mo-qa-default');
+            const scopedKey = `${workspaceId}:weeklyDDSHistoryArchive`;
+            const url = config.useWorkspaceColumn
+                ? `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?workspace_id=eq.${encodeURIComponent(workspaceId)}&state_key=eq.${encodeURIComponent(scopedKey)}&select=payload`
+                : `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?state_key=eq.${encodeURIComponent(scopedKey)}&select=payload`;
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    apikey: config.anonKey,
+                    Authorization: `Bearer ${accessToken || config.anonKey}`
+                }
+            });
+
+            if (!response.ok) {
+                return;
+            }
+
+            const rows = await response.json();
+            if (!Array.isArray(rows) || !rows.length || !rows[0].payload) {
+                return;
+            }
+
+            localStorage.setItem('weeklyDDSHistoryArchive', JSON.stringify(rows[0].payload));
+        }
+
+        function renderHistoryArchive() {
+            const archive = loadState('weeklyDDSHistoryArchive', []);
+            const notesBody = document.getElementById('history-notes-body');
+            const triggerBody = document.getElementById('history-trigger-body');
+            const followupBody = document.getElementById('history-followup-body');
+
+            notesBody.innerHTML = '';
+            triggerBody.innerHTML = '';
+            followupBody.innerHTML = '';
+
+            if (!Array.isArray(archive) || !archive.length) {
+                appendEmptyRow(notesBody, getColspan(2), 'No history notes yet.');
+                appendEmptyRow(triggerBody, getColspan(6), 'No removed closed trigger details yet.');
+                appendEmptyRow(followupBody, getColspan(7), 'No removed closed follow-up items yet.');
+                return;
+            }
+
+            archive.forEach((entry, entryIndex) => {
+                const notesText = buildNotesText(entry);
+                if (notesText) {
+                    const row = document.createElement('tr');
+                    row.appendChild(createCell(normalizeWeekLabel(entry)));
+                    const notesCell = createCell(notesText);
+                    notesCell.className = 'history-multiline-cell';
+                    row.appendChild(notesCell);
+                    row.appendChild(createDeleteCell(() => removeNotesForEntry(entryIndex)));
+                    notesBody.appendChild(row);
+                }
+            });
+
+            if (!notesBody.children.length) {
+                appendEmptyRow(notesBody, getColspan(2), 'No history notes yet.');
+            }
+
+            const triggerRows = [];
+            const followupRows = [];
+
+            archive.forEach((entry, entryIndex) => {
+                const weekLabel = normalizeWeekLabel(entry);
+                const removedItems = Array.isArray(entry?.removedItems) ? entry.removedItems : [];
+
+                removedItems.forEach((removed, removedIndex) => {
+                    const item = removed?.item || {};
+                    if (removed?.kind === 'follow-up') {
+                        followupRows.push({ weekLabel, item, entryIndex, removedIndex });
+                    } else {
+                        triggerRows.push({ weekLabel, item, entryIndex, removedIndex });
+                    }
+                });
+            });
+
+            triggerRows.forEach((rowData) => {
+                const row = document.createElement('tr');
+                row.appendChild(createCell(rowData.weekLabel));
+                row.appendChild(createCell(String(rowData.item.triggerDetail || '')));
+                row.appendChild(createCell(String(rowData.item.nextStep || '')));
+                row.appendChild(createCell(String(rowData.item.owner || '')));
+                row.appendChild(createCell(String(rowData.item.dueDate || '')));
+                row.appendChild(createCell(String(rowData.item.status || 'Close')));
+                row.appendChild(createDeleteCell(() => removeRemovedItem(rowData.entryIndex, rowData.removedIndex)));
+                triggerBody.appendChild(row);
+            });
+
+            if (!triggerBody.children.length) {
+                appendEmptyRow(triggerBody, getColspan(6), 'No removed closed trigger details yet.');
+            }
+
+            followupRows.forEach((rowData) => {
+                const row = document.createElement('tr');
+                row.appendChild(createCell(rowData.weekLabel));
+                row.appendChild(createCell(String(rowData.item.bucket || '')));
+                row.appendChild(createCell(String(rowData.item.taskName || '')));
+                row.appendChild(createCell(String(rowData.item.comments || '')));
+                row.appendChild(createCell(String(rowData.item.assignTo || '')));
+                row.appendChild(createCell(String(rowData.item.dueDate || '')));
+                row.appendChild(createCell(String(rowData.item.status || 'Close')));
+                row.appendChild(createDeleteCell(() => removeRemovedItem(rowData.entryIndex, rowData.removedIndex)));
+                followupBody.appendChild(row);
+            });
+
+            if (!followupBody.children.length) {
+                appendEmptyRow(followupBody, getColspan(7), 'No removed closed follow-up items yet.');
+            }
+
+        }
+
+        async function resolveAdminPermission() {
+            const cfg = window.DDS_CLOUD_CONFIG || {};
+            const requiresGuard = Boolean(cfg.enabled && cfg.requireAuth && cfg.baseUrl && cfg.anonKey);
+
+            if (!requiresGuard) {
+                historyAdminState.canDelete = true;
+                applyDeleteVisibility();
+                return;
+            }
+
+            if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+                historyAdminState.canDelete = false;
+                applyDeleteVisibility();
+                return;
+            }
+
+            try {
+                const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey);
+                const { data: sessionData } = await client.auth.getSession();
+                const accessToken = sessionData?.session?.access_token || '';
+                const email = String(sessionData?.session?.user?.email || '').toLowerCase();
+
+                if (!accessToken || !email) {
+                    historyAdminState.canDelete = false;
+                    applyDeleteVisibility();
+                    return;
+                }
+
+                const url = `${String(cfg.baseUrl).replace(/\/$/, '')}/rest/v1/dds_workspace_members?select=role&workspace_id=eq.${encodeURIComponent(String(cfg.workspaceId || 'cn-mo-qa-default'))}&email=eq.${encodeURIComponent(email)}`;
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        apikey: cfg.anonKey,
+                        Authorization: `Bearer ${accessToken}`
+                    }
+                });
+
+                if (!response.ok) {
+                    historyAdminState.canDelete = false;
+                    applyDeleteVisibility();
+                    return;
+                }
+
+                const rows = await response.json();
+                historyAdminState.canDelete = Array.isArray(rows) && rows[0]?.role === 'admin';
+                applyDeleteVisibility();
+            } catch (_error) {
+                historyAdminState.canDelete = false;
+                applyDeleteVisibility();
+            }
+        }
+
+        async function guardAdminNav() {
+            const link = document.getElementById('admin-nav-link');
+            if (!link) return;
+
+            const cfg = window.DDS_CLOUD_CONFIG || {};
+            const requiresGuard = Boolean(cfg.enabled && cfg.requireAuth && cfg.baseUrl && cfg.anonKey);
+            if (!requiresGuard || !window.supabase || typeof window.supabase.createClient !== 'function') return;
+
+            const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey);
+            const { data: sessionData } = await client.auth.getSession();
+            const accessToken = sessionData?.session?.access_token || '';
+            const email = String(sessionData?.session?.user?.email || '').toLowerCase();
+
+            let allowAdmin = false;
+            if (accessToken && email) {
+                const url = `${String(cfg.baseUrl).replace(/\/$/, '')}/rest/v1/dds_workspace_members?select=role&workspace_id=eq.${encodeURIComponent(String(cfg.workspaceId || 'cn-mo-qa-default'))}&email=eq.${encodeURIComponent(email)}`;
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        apikey: cfg.anonKey,
+                        Authorization: `Bearer ${accessToken}`
+                    }
+                });
+                if (response.ok) {
+                    const rows = await response.json();
+                    allowAdmin = Array.isArray(rows) && rows[0]?.role === 'admin';
+                }
+            }
+
+            if (!allowAdmin) {
+                link.classList.add('nav-disabled');
+                link.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    const msg = document.getElementById('page-access-message');
+                    if (msg) msg.textContent = 'need access';
+                });
+            }
+        }
+
+        Promise.all([
+            bootstrapHistoryArchiveFromCloud().catch(() => null),
+            resolveAdminPermission(),
+            guardAdminNav().catch(() => null)
+        ]).finally(() => {
+            renderHistoryArchive();
+        });
+    </script>
+</body>
+</html>

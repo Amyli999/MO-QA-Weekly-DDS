@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DDS Admin</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="hero">
+            <div class="hero-content">
+                <h1>DDS Admin</h1>
+                <div class="hero-badge">Workspace Member Access</div>
+                <div id="admin-auth-status" class="sync-status sync-local">Not signed in</div>
+                <div class="auth-controls">
+                    <input id="admin-auth-email" type="email" placeholder="you@company.com" aria-label="Admin login email">
+                    <button id="admin-login-btn" type="button">Send Login Link</button>
+                    <button id="admin-logout-btn" type="button" class="secondary-btn">Logout</button>
+                </div>
+                <div id="admin-message" class="auth-message"></div>
+            </div>
+        </header>
+
+        <nav class="top-nav">
+            <a href="../index.html">DDS Dashboard</a>
+            <a href="history.html">DDS history</a>
+            <a href="masterplan.html">Master Plan</a>
+            <a class="active" href="admin.html">Admin</a>
+        </nav>
+
+        <section class="card">
+            <div class="section-header">
+                <div>
+                    <h2>Member Permission</h2>
+                    <p class="admin-note">Only admin email can add/remove members and update roles.</p>
+                </div>
+            </div>
+
+            <div id="admin-access-warning" class="permission-banner"></div>
+
+            <div class="admin-row admin-add-row">
+                <input id="new-member-email" type="email" placeholder="member@company.com">
+                <select id="new-member-role">
+                    <option value="viewer">viewer</option>
+                    <option value="editor">editor</option>
+                    <option value="admin">admin</option>
+                </select>
+                <button id="add-member-btn" type="button">Save</button>
+            </div>
+
+            <div id="member-list"></div>
+        </section>
+    </div>
+
+    <script src="../cloud-config.js?v=20260727a"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        const config = window.DDS_CLOUD_CONFIG || {};
+        const localMembersStorageKey = `ddsLocalWorkspaceMembers:${String(config.workspaceId || 'cn-mo-qa-default')}`;
+        const state = {
+            baseUrl: String(config.baseUrl || '').replace(/\/$/, ''),
+            anonKey: String(config.anonKey || ''),
+            workspaceId: String(config.workspaceId || 'cn-mo-qa-default'),
+            authClient: null,
+            accessToken: '',
+            email: '',
+            role: '',
+            members: []
+        };
+
+        function isCloudReady() {
+            return Boolean(config.enabled && state.baseUrl && state.anonKey);
+        }
+
+        function loadLocalMembers() {
+            try {
+                const raw = localStorage.getItem(localMembersStorageKey);
+                const parsed = raw ? JSON.parse(raw) : [];
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (_error) {
+                return [];
+            }
+        }
+
+        function saveLocalMembers(members) {
+            localStorage.setItem(localMembersStorageKey, JSON.stringify(members));
+        }
+
+        function setMessage(msg, isError = false) {
+            const el = document.getElementById('admin-message');
+            if (!el) return;
+            el.textContent = msg || '';
+            el.style.color = isError ? '#ffd9d6' : '#ffe9a5';
+        }
+
+        function setAuthStatus(text, statusClass) {
+            const el = document.getElementById('admin-auth-status');
+            if (!el) return;
+            el.className = `sync-status ${statusClass}`;
+            el.textContent = text;
+        }
+
+        function canManage() {
+            if (!isCloudReady()) return true;
+            return state.role === 'admin';
+        }
+
+        function applyManageMode() {
+            const warning = document.getElementById('admin-access-warning');
+            const disabled = !canManage();
+            if (warning) {
+                if (!isCloudReady()) {
+                    warning.textContent = 'Local mode: member list is stored in this browser only.';
+                } else if (!state.accessToken) {
+                    warning.textContent = 'Please sign in first.';
+                } else if (disabled) {
+                    warning.textContent = 'No admin permission for this email.';
+                } else {
+                    warning.textContent = '';
+                }
+            }
+            const addBtn = document.getElementById('add-member-btn');
+            const addEmail = document.getElementById('new-member-email');
+            const addRole = document.getElementById('new-member-role');
+            if (addBtn) addBtn.disabled = disabled;
+            if (addEmail) addEmail.disabled = disabled;
+            if (addRole) addRole.disabled = disabled;
+        }
+
+        function buildHeaders() {
+            return {
+                apikey: state.anonKey,
+                Authorization: `Bearer ${state.accessToken || state.anonKey}`,
+                'Content-Type': 'application/json'
+            };
+        }
+
+        async function apiFetch(path, options = {}) {
+            const response = await fetch(`${state.baseUrl}${path}`, options);
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Request failed: ${response.status} ${text}`);
+            }
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                return response.json();
+            }
+            return null;
+        }
+
+        async function fetchMyRole() {
+            if (!isCloudReady()) {
+                state.role = 'admin';
+                return;
+            }
+
+            if (!state.accessToken || !state.email) {
+                state.role = '';
+                return;
+            }
+
+            const rows = await apiFetch(
+                `/rest/v1/dds_workspace_members?select=role&workspace_id=eq.${encodeURIComponent(state.workspaceId)}&email=eq.${encodeURIComponent(state.email.toLowerCase())}`,
+                {
+                    method: 'GET',
+                    headers: buildHeaders()
+                }
+            );
+            state.role = Array.isArray(rows) && rows[0]?.role ? rows[0].role : '';
+        }
+
+        async function loadMembers() {
+            if (!isCloudReady()) {
+                state.members = loadLocalMembers();
+                renderMembers();
+                return;
+            }
+
+            if (!state.accessToken) {
+                state.members = [];
+                renderMembers();
+                return;
+            }
+
+            const rows = await apiFetch(
+                `/rest/v1/dds_workspace_members?select=id,email,role,created_at&workspace_id=eq.${encodeURIComponent(state.workspaceId)}&order=created_at.asc`,
+                {
+                    method: 'GET',
+                    headers: buildHeaders()
+                }
+            );
+            state.members = Array.isArray(rows) ? rows : [];
+            renderMembers();
+        }
+
+        async function persistMemberUpdate(id, email, role) {
+            if (!id || !email || !role) {
+                setMessage('Email cannot be empty.', true);
+                return;
+            }
+
+            if (!isCloudReady()) {
+                const members = loadLocalMembers();
+                const idx = members.findIndex((m) => String(m.id) === String(id));
+                if (idx >= 0) {
+                    members[idx].role = role;
+                    members[idx].email = email;
+                    saveLocalMembers(members);
+                    state.members = members;
+                    renderMembers();
+                }
+                setMessage('save success');
+                return;
+            }
+
+            await apiFetch(`/rest/v1/dds_workspace_members?id=eq.${encodeURIComponent(id)}`, {
+                method: 'PATCH',
+                headers: { ...buildHeaders(), Prefer: 'return=minimal' },
+                body: JSON.stringify({ role, email })
+            });
+            setMessage('save success');
+            await loadMembers();
+        }
+
+        function renderMembers() {
+            const container = document.getElementById('member-list');
+            if (!container) return;
+
+            if (!state.members.length) {
+                container.innerHTML = '<div class="admin-note">No members in this workspace yet.</div>';
+                return;
+            }
+
+            container.innerHTML = state.members.map((member) => `
+                <div class="admin-row" data-id="${member.id}">
+                    <input type="email" class="member-email" value="${member.email}" ${canManage() ? '' : 'disabled'}>
+                    <select class="member-role" ${canManage() ? '' : 'disabled'}>
+                        <option value="viewer" ${member.role === 'viewer' ? 'selected' : ''}>viewer</option>
+                        <option value="editor" ${member.role === 'editor' ? 'selected' : ''}>editor</option>
+                        <option value="admin" ${member.role === 'admin' ? 'selected' : ''}>admin</option>
+                    </select>
+                    <div class="admin-actions">
+                        <button type="button" class="secondary-btn remove-member" ${canManage() ? '' : 'disabled'}>Remove</button>
+                    </div>
+                </div>
+            `).join('');
+
+            container.querySelectorAll('.member-email, .member-role').forEach((field) => {
+                field.addEventListener('change', async () => {
+                    if (!canManage()) {
+                        setMessage('No admin permission for this email.', true);
+                        return;
+                    }
+
+                    const row = field.closest('.admin-row');
+                    const id = row?.dataset.id;
+                    const role = row?.querySelector('.member-role')?.value;
+                    const email = String(row?.querySelector('.member-email')?.value || '').trim().toLowerCase();
+
+                    try {
+                        await persistMemberUpdate(id, email, role);
+                    } catch (error) {
+                        setMessage(error.message || 'Update failed', true);
+                    }
+                });
+            });
+
+            container.querySelectorAll('.remove-member').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    if (!canManage()) {
+                        setMessage('No admin permission for this email.', true);
+                        return;
+                    }
+
+                    const row = btn.closest('.admin-row');
+                    const id = row?.dataset.id;
+                    if (!id) return;
+
+                    try {
+                        if (!isCloudReady()) {
+                            const members = loadLocalMembers().filter((m) => String(m.id) !== String(id));
+                            saveLocalMembers(members);
+                            state.members = members;
+                            renderMembers();
+                            setMessage('Member removed in local mode.');
+                            return;
+                        }
+
+                        await apiFetch(`/rest/v1/dds_workspace_members?id=eq.${encodeURIComponent(id)}`, {
+                            method: 'DELETE',
+                            headers: { ...buildHeaders(), Prefer: 'return=minimal' }
+                        });
+                        setMessage('Member removed.');
+                        await loadMembers();
+                    } catch (error) {
+                        setMessage(error.message || 'Remove failed', true);
+                    }
+                });
+            });
+        }
+
+        async function addMember() {
+            const emailInput = document.getElementById('new-member-email');
+            const roleSelect = document.getElementById('new-member-role');
+            const email = String(emailInput?.value || '').trim().toLowerCase();
+            const role = String(roleSelect?.value || 'viewer');
+
+            if (!email) {
+                setMessage('Please enter member email.', true);
+                return;
+            }
+
+            if (!canManage()) {
+                setMessage('No admin permission for this email.', true);
+                return;
+            }
+
+            try {
+                if (!isCloudReady()) {
+                    const members = loadLocalMembers();
+                    const existingIndex = members.findIndex((m) => String(m.email || '').toLowerCase() === email);
+                    const payload = {
+                        id: existingIndex >= 0 ? members[existingIndex].id : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                        workspace_id: state.workspaceId,
+                        email,
+                        role,
+                        created_at: existingIndex >= 0 ? members[existingIndex].created_at : new Date().toISOString()
+                    };
+
+                    if (existingIndex >= 0) {
+                        members[existingIndex] = payload;
+                    } else {
+                        members.push(payload);
+                    }
+
+                    saveLocalMembers(members);
+                    state.members = members;
+                    renderMembers();
+                    emailInput.value = '';
+                    setMessage('save success');
+                    return;
+                }
+
+                if (!state.accessToken) {
+                    setMessage('Please sign in first.', true);
+                    return;
+                }
+
+                await apiFetch('/rest/v1/dds_workspace_members', {
+                    method: 'POST',
+                    headers: { ...buildHeaders(), Prefer: 'resolution=merge-duplicates,return=minimal' },
+                    body: JSON.stringify([
+                        {
+                            workspace_id: state.workspaceId,
+                            email,
+                            role
+                        }
+                    ])
+                });
+                setMessage('save success');
+                emailInput.value = '';
+                await loadMembers();
+            } catch (error) {
+                setMessage(error.message || 'Add member failed', true);
+            }
+        }
+
+        function applySession(session) {
+            state.accessToken = session?.access_token || '';
+            state.email = session?.user?.email || '';
+            setAuthStatus(state.email ? `Signed in: ${state.email}` : 'Not signed in', state.email ? 'sync-synced' : 'sync-local');
+        }
+
+        async function refreshPermissionAndMembers() {
+            try {
+                await fetchMyRole();
+                applyManageMode();
+                await loadMembers();
+                if (isCloudReady() && !state.role && state.email) {
+                    setMessage('No admin permission for this email.', true);
+                }
+            } catch (error) {
+                setMessage(error.message || 'Permission check failed', true);
+            }
+        }
+
+        async function initAdmin() {
+            document.getElementById('admin-login-btn')?.addEventListener('click', async () => {
+                if (!isCloudReady()) {
+                    setMessage('Local mode is active. Cloud login is not required.');
+                    return;
+                }
+
+                const email = String(document.getElementById('admin-auth-email')?.value || '').trim();
+                if (!email) {
+                    setMessage('Please enter email first.', true);
+                    return;
+                }
+
+                try {
+                    setMessage('Sending login link...');
+                    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+                    const { error } = await state.authClient.auth.signInWithOtp({
+                        email,
+                        options: { emailRedirectTo: redirectTo }
+                    });
+                    if (error) throw error;
+                    setMessage('Login link sent. Check your inbox.');
+                } catch (error) {
+                    setMessage(error.message || 'Login failed', true);
+                }
+            });
+
+            document.getElementById('admin-logout-btn')?.addEventListener('click', async () => {
+                if (!state.authClient) {
+                    setMessage('Local mode has no cloud session to logout.');
+                    return;
+                }
+                await state.authClient.auth.signOut();
+                applySession(null);
+                state.role = '';
+                applyManageMode();
+                state.members = [];
+                renderMembers();
+                setMessage('Signed out.');
+            });
+
+            document.getElementById('add-member-btn')?.addEventListener('click', addMember);
+
+            if (!isCloudReady()) {
+                setAuthStatus('Local mode', 'sync-local');
+                setMessage('Cloud not configured. Using browser local member list.');
+                state.role = 'admin';
+                await loadMembers();
+                applyManageMode();
+                return;
+            }
+
+            if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+                setAuthStatus('Supabase library missing', 'sync-error');
+                return;
+            }
+
+            state.authClient = window.supabase.createClient(state.baseUrl, state.anonKey);
+
+            const { data: sessionData } = await state.authClient.auth.getSession();
+            applySession(sessionData?.session || null);
+            await refreshPermissionAndMembers();
+
+            state.authClient.auth.onAuthStateChange(async (_event, session) => {
+                applySession(session || null);
+                await refreshPermissionAndMembers();
+            });
+        }
+
+        initAdmin().catch((error) => {
+            setMessage(error.message || 'Admin page failed to initialize.', true);
+        });
+    </script>
+</body>
+</html>

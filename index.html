@@ -1,40 +1,152 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>QA Weekly DDS</title>
-  <link rel="stylesheet" href="css/style.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CN MO QA Weekly DDS Dashboard</title>
+    <link rel="stylesheet" href="css/style.css?v=20260727l">
 </head>
+
 <body>
-  <header>
-    <div class="container">
-      <h1>QA Weekly DDS</h1>
-      <p>Weekly quality review reports and issue tracking</p>
+    <div class="page-shell">
+        <header class="hero">
+            <div class="hero-content">
+                <div class="hero-main">
+                    <h1>CN MO QA Weekly DDS Dashboard</h1>
+                    <div class="hero-badge"><span id="current-week-label"></span></div>
+                </div>
+                <div class="hero-auth">
+                    <div id="sync-status" class="sync-status sync-local">Local-only mode</div>
+                    <div class="auth-controls">
+                        <input id="auth-email-input" type="email" placeholder="you@company.com" aria-label="Login email">
+                        <button id="auth-login-btn" type="button">Sign In</button>
+                    </div>
+                    <div id="auth-message" class="auth-message"></div>
+                </div>
+            </div>
+        </header>
+
+        <nav class="top-nav">
+            <a class="active" href="index.html">DDS Dashboard</a>
+            <a href="pages/history.html">DDS history</a>
+            <a href="pages/masterplan.html">Master Plan</a>
+            <a id="admin-nav-link" href="pages/admin.html">Admin</a>
+        </nav>
+
+        <main>
+            <div id="permission-banner" class="permission-banner"></div>
+            <section class="card">
+                <div class="section-header">
+                    <div>
+                        <h2>1. General Information Sharing</h2>
+                    </div>
+                    <button id="reset-week-btn" type="button">Reset for new week</button>
+                </div>
+
+                <div class="module-1-grid">
+                    <div class="module-1-panel">
+                        <h3>Reminder</h3>
+                        <ul id="reminder-list"></ul>
+                    </div>
+                    <div class="module-1-panel module-1-panel--notes">
+                        <h3>Notes</h3>
+                        <textarea id="general-notes-input" rows="6"></textarea>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="section-header">
+                    <div>
+                        <h2>2. DDS Trigger</h2>
+                        <div class="trigger-access-row">
+                            <label class="email-input-label">
+                                暗号：
+                                <input id="user-email" type="text" placeholder="">
+                            </label>
+                            <button id="add-trigger-row-btn" type="button" class="add-btn" aria-label="Add trigger">+</button>
+                        </div>
+                    </div>
+                    <div class="section-header-actions">
+                        <label class="date-input-label">
+                            Start date:
+                            <input id="trigger-start-date" type="date">
+                        </label>
+                    </div>
+                </div>
+
+                <div class="table-wrapper">
+                    <table class="data-table trigger-table">
+                        <thead id="trigger-head"></thead>
+                        <tbody id="trigger-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="section-header">
+                    <div>
+                        <h2>3. Trigger Details</h2>
+                    </div>
+                    <button class="add-btn" data-target="details" type="button">+</button>
+                </div>
+
+                <div class="table-wrapper">
+                    <table class="data-table detail-table">
+                        <colgroup>
+                            <col class="detail-col-1">
+                            <col class="detail-col-2">
+                            <col class="detail-col-3">
+                            <col class="detail-col-4">
+                            <col class="detail-col-5">
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th>Trigger Detail</th>
+                                <th>Next Step</th>
+                                <th>Assign To</th>
+                                <th>Due Date</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="details-body"></tbody>
+                    </table>
+                </div>
+
+            </section>
+
+            <section class="card">
+                <div class="section-header">
+                    <div>
+                        <h2>4. DDS Other Follow Ups</h2>
+                    </div>
+                    <button class="add-btn" data-target="followups" type="button">+</button>
+                </div>
+
+                <div class="table-wrapper">
+                    <table class="data-table followup-table">
+                        <thead>
+                            <tr>
+                                <th>Bucket</th>
+                                <th>Task Name</th>
+                                <th>Comments</th>
+                                <th>Assign To</th>
+                                <th>Due Date</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="followup-body"></tbody>
+                    </table>
+                </div>
+
+            </section>
+        </main>
     </div>
-  </header>
 
-  <main class="container">
-    <section class="intro">
-      <h2>Project Overview</h2>
-      <p>This is a static website for storing weekly DDS reports. Content is kept in a GitHub repository, and authorized users can edit files directly on GitHub.</p>
-    </section>
-
-    <section>
-      <h2>Latest Report</h2>
-      <ul class="report-list">
-        <li><a href="weekly/2026-06-18.html">2026-06-18 Weekly DDS</a></li>
-      </ul>
-    </section>
-
-    <section>
-      <h2>How to Use</h2>
-      <ol>
-        <li>Edit page files locally, then commit and push changes using Git.</li>
-        <li>Authorized users can also click files in the GitHub repository page and edit them online.</li>
-        <li>After enabling GitHub Pages, the site will be automatically published to the configured address.</li>
-      </ol>
-    </section>
-  </main>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="cloud-config.js?v=20260727a"></script>
+    <script src="script.js?v=20260727n"></script>
 </body>
+
 </html>
