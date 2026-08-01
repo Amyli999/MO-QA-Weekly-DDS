@@ -97,6 +97,11 @@ function hasWritePermission() {
     return cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
 }
 
+function canManageWorkspaceContent() {
+    if (!cloudSyncState.enabled || !cloudSyncState.requireAuth) return true;
+    return cloudSyncState.currentUserRole === 'admin';
+}
+
 function applyPermissionMode() {
     const readOnly = !hasWritePermission();
     const banner = document.getElementById('permission-banner');
@@ -105,8 +110,7 @@ function applyPermissionMode() {
     }
 
     document.querySelectorAll('main input, main textarea, main select, main button').forEach((el) => {
-        const triggerSecretLocked = el.dataset.triggerSecretLocked === 'true';
-        el.disabled = readOnly || triggerSecretLocked;
+        el.disabled = readOnly;
     });
 }
 
@@ -573,8 +577,6 @@ function getDateStateForCurrentWeek() {
     return state;
 }
 
-const triggerSecretPhrase = 'CN MO守门员';
-
 function loadState(key, fallback) {
     try {
         const value = localStorage.getItem(key);
@@ -690,18 +692,6 @@ function recordRemovalToHistory(kind, item) {
     return limitedArchive;
 }
 
-function getUserState() {
-    return loadState('weeklyDDSUserState', { email: '' });
-}
-
-function saveUserState(state) {
-    saveState('weeklyDDSUserState', state);
-}
-
-function isTriggerEditor(secret) {
-    return String(secret || '').trim() === triggerSecretPhrase;
-}
-
 function getDefaultTriggerState() {
     const triggerRows = getTriggerRows();
     return {
@@ -749,41 +739,6 @@ function getTriggerState() {
 function saveTriggerState(state) {
     const normalizedState = normalizeTriggerState(state);
     saveState('weeklyDDSTriggersState', normalizedState);
-}
-
-function renderUserAccess() {
-    const state = getUserState();
-    const secretInput = document.getElementById('user-email');
-    const hint = document.getElementById('trigger-edit-hint');
-
-    if (secretInput) {
-        secretInput.value = state.email || '';
-        secretInput.oninput = (event) => {
-            state.email = event.target.value.trim();
-            saveUserState(state);
-            const canEdit = isTriggerEditor(state.email);
-            if (hint) {
-                hint.textContent = canEdit
-                    ? '暗号正确，可编辑 trigger。'
-                    : '暗号错误或未填写，trigger 配置只读。';
-            }
-        };
-        secretInput.onchange = (event) => {
-            state.email = event.target.value.trim();
-            saveUserState(state);
-            renderTriggerGrid();
-        };
-    }
-
-    const canEdit = isTriggerEditor(state.email);
-
-    if (hint) {
-        hint.textContent = canEdit
-            ? '暗号正确，可编辑 trigger。'
-            : '暗号错误或未填写，trigger 配置只读。';
-    }
-
-    return canEdit;
 }
 
 function buildCurrentSnapshot() {
@@ -1080,13 +1035,11 @@ function renderTriggerGrid() {
     const addTriggerButton = document.getElementById('add-trigger-row-btn');
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const canManageTrigger = renderUserAccess();
-    const triggerSecretLocked = !canManageTrigger;
+    const canManageTrigger = canManageWorkspaceContent();
 
     if (startDateInput) {
         startDateInput.value = dateState.startDate || '';
-        startDateInput.dataset.triggerSecretLocked = String(triggerSecretLocked);
-        startDateInput.disabled = triggerSecretLocked;
+        startDateInput.disabled = !canManageTrigger;
         startDateInput.onchange = (event) => {
             dateState.startDate = event.target.value;
             saveState('weeklyDDSTriggersDateState', dateState);
@@ -1095,8 +1048,7 @@ function renderTriggerGrid() {
     }
 
     if (addTriggerButton) {
-        addTriggerButton.dataset.triggerSecretLocked = String(triggerSecretLocked);
-        addTriggerButton.disabled = triggerSecretLocked;
+        addTriggerButton.disabled = !canManageTrigger;
     }
 
     head.innerHTML = `
@@ -1169,7 +1121,6 @@ function renderTriggerGrid() {
             input.dataset.future = String(columnDate.getTime() > today.getTime());
             input.dataset.rowIndex = String(rowEntry.sourceIndex);
             input.dataset.columnIndex = String(columnIndex);
-            input.dataset.triggerSecretLocked = 'false';
             input.addEventListener('input', (event) => {
                 const rawValue = event.target.value;
                 const value = rawValue === '' ? '0' : String(Math.max(0, Number(rawValue) || 0));
@@ -1422,7 +1373,7 @@ function addRow(target) {
 }
 
 function addTriggerRow() {
-    if (!hasWritePermission()) return;
+    if (!canManageWorkspaceContent()) return;
 
     const state = getTriggerState();
     const nextOrder = Math.max(0, ...state.orders.map((order) => Number(order) || 0)) + 1;
