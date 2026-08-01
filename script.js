@@ -954,6 +954,7 @@ function normalizeTriggerDetailsStateForCurrentWeek() {
         const closedItems = state.items.filter((item) => String(item.status || '').trim().toLowerCase() === 'close');
         closedItems.forEach((item) => {
             recordRemovalToHistory('trigger-detail', {
+                triggerType: item.triggerType,
                 triggerDetail: item.triggerDetail,
                 nextStep: item.nextStep,
                 owner: item.owner,
@@ -968,6 +969,47 @@ function normalizeTriggerDetailsStateForCurrentWeek() {
     }
 
     return state;
+}
+
+const triggerTypeOrder = ['Quality Issue', 'Change Management', 'SOP', 'Others'];
+
+function getTriggerTypeSortWeight(triggerType) {
+    const normalized = String(triggerType || '').trim().toLowerCase();
+    const index = triggerTypeOrder.findIndex((item) => item.toLowerCase() === normalized);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function isTriggerDetailRowReadyForSort(item) {
+    const row = item || {};
+    return Boolean(
+        String(row.triggerType || '').trim()
+        && String(row.triggerDetail || '').trim()
+        && String(row.dueDate || '').trim()
+    );
+}
+
+function compareTriggerDetailEntries(left, right) {
+    const leftItem = left.item || {};
+    const rightItem = right.item || {};
+
+    const leftReady = isTriggerDetailRowReadyForSort(leftItem);
+    const rightReady = isTriggerDetailRowReadyForSort(rightItem);
+
+    if (leftReady !== rightReady) {
+        return leftReady ? -1 : 1;
+    }
+
+    if (!leftReady && !rightReady) {
+        return left.index - right.index;
+    }
+
+    const typeDelta = getTriggerTypeSortWeight(leftItem.triggerType) - getTriggerTypeSortWeight(rightItem.triggerType);
+    if (typeDelta !== 0) return typeDelta;
+
+    const dueDateDelta = getDueDateSortWeight(leftItem.dueDate) - getDueDateSortWeight(rightItem.dueDate);
+    if (dueDateDelta !== 0) return dueDateDelta;
+
+    return left.index - right.index;
 }
 
 function normalizeFollowUpsStateForCurrentWeek() {
@@ -1248,17 +1290,30 @@ function renderTriggerDetails() {
     const archive = document.getElementById('details-archive');
 
     const allItems = state.items;
+    const sortedEntries = allItems
+        .map((item, index) => ({ item, index }))
+        .sort(compareTriggerDetailEntries);
     const archivedItems = state.items.filter((item) => item.status === 'Close');
 
     body.innerHTML = '';
 
     if (!allItems.length) {
-        body.innerHTML = '<tr><td colspan="5">No trigger details yet. Add a new row to begin.</td></tr>';
+        body.innerHTML = '<tr><td colspan="6">No trigger details yet. Add a new row to begin.</td></tr>';
     } else {
-        allItems.forEach((item) => {
-            const itemIndex = state.items.indexOf(item);
+        sortedEntries.forEach((entry) => {
+            const item = entry.item;
+            const itemIndex = entry.index;
             const row = document.createElement('tr');
             row.innerHTML = `
+                <td>
+                    <select class="detail-field" data-field="triggerType" data-index="${itemIndex}">
+                        <option value=""></option>
+                        <option value="Quality Issue">Quality Issue</option>
+                        <option value="Change Management">Change Management</option>
+                        <option value="SOP">SOP</option>
+                        <option value="Others">Others</option>
+                    </select>
+                </td>
                 <td><textarea rows="1" class="detail-field detail-textarea" data-field="triggerDetail" data-index="${itemIndex}"></textarea></td>
                 <td><textarea rows="1" class="detail-field detail-textarea" data-field="nextStep" data-index="${itemIndex}"></textarea></td>
                 <td><input type="text" class="detail-field" data-field="owner" data-index="${itemIndex}"></td>
@@ -1295,7 +1350,9 @@ function renderTriggerDetails() {
                     if (field.tagName === 'TEXTAREA') {
                         autoResizeTextArea(field);
                     }
-                    if (field.dataset.field === 'status') {
+                    if (field.dataset.field === 'status'
+                        || field.dataset.field === 'triggerType'
+                        || field.dataset.field === 'dueDate') {
                         renderTriggerDetails();
                     }
                 });
@@ -1450,7 +1507,7 @@ function addRow(target) {
 
     if (target === 'details') {
         const state = normalizeTriggerDetailsStateForCurrentWeek();
-        state.items.push({ triggerDetail: '', nextStep: '', owner: '', dueDate: '', status: 'Open' });
+        state.items.push({ triggerType: '', triggerDetail: '', nextStep: '', owner: '', dueDate: '', status: 'Open' });
         saveState('weeklyDDSTriggerDetailsState', state);
         renderTriggerDetails();
     }

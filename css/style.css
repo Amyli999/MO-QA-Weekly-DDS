@@ -374,16 +374,22 @@ main {
     max-width: 100%;
 }
 
+.data-table.detail-table .detail-col-0 {
+    width: 150px;
+    min-width: 150px;
+    max-width: 150px;
+}
+
 .data-table.detail-table .detail-col-1 {
-    width: 340px;
-    min-width: 340px;
-    max-width: 340px;
+    width: 250px;
+    min-width: 250px;
+    max-width: 250px;
 }
 
 .data-table.detail-table .detail-col-2 {
-    width: 609px;
-    min-width: 609px;
-    max-width: 609px;
+    width: 430px;
+    min-width: 430px;
+    max-width: 430px;
 }
 
 .data-table.detail-table .detail-col-3,
@@ -437,8 +443,8 @@ main {
     white-space: pre-wrap;
 }
 
-.data-table.detail-table td:nth-child(1),
-.data-table.detail-table td:nth-child(2) {
+.data-table.detail-table td:nth-child(2),
+.data-table.detail-table td:nth-child(3) {
     white-space: normal;
 }
 
