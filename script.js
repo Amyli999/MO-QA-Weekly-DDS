@@ -16,6 +16,7 @@ const DEFAULT_TRIGGER_ROWS = [
 
 const WORKSPACE_CONFIG_STORAGE_KEY = 'weeklyDDSWorkspaceConfigState';
 const ADMIN_LOGIN_EMAIL = 'li.he.7@pg.com';
+const LOCAL_EDITOR_EMAILS = ['yu.h.1@pg.com'];
 const LOCAL_AUTH_STORAGE_KEY = 'weeklyDDSLocalAuthSession';
 
 const teamMembers = ['Amy', 'Ben', 'Cathy', 'Diana', 'Ethan', 'Frank'];
@@ -66,6 +67,14 @@ function saveLocalAuthSession(email, role) {
 
 function clearLocalAuthSession() {
     localStorage.removeItem(LOCAL_AUTH_STORAGE_KEY);
+}
+
+function resolveLocalRole(email) {
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!normalized) return '';
+    if (normalized === ADMIN_LOGIN_EMAIL) return 'admin';
+    if (LOCAL_EDITOR_EMAILS.includes(normalized)) return 'editor';
+    return '';
 }
 
 function setAuthMessage(message, isError = false) {
@@ -129,7 +138,7 @@ function updateAuthUi() {
 }
 
 function hasWritePermission() {
-    if (!cloudSyncState.enabled) return cloudSyncState.currentUserRole === 'admin';
+    if (!cloudSyncState.enabled) return cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
     if (!cloudSyncState.requireAuth) return true;
     return cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
 }
@@ -189,9 +198,9 @@ async function initializeAuth(config) {
         const logoutButton = document.getElementById('auth-logout-btn');
         const savedSession = loadLocalAuthSession();
 
-        if (savedSession?.email?.toLowerCase() === ADMIN_LOGIN_EMAIL && savedSession.role === 'admin') {
+        if (savedSession?.email && savedSession.role === resolveLocalRole(savedSession.email)) {
             cloudSyncState.currentUserEmail = savedSession.email;
-            cloudSyncState.currentUserRole = 'admin';
+            cloudSyncState.currentUserRole = savedSession.role;
         } else {
             cloudSyncState.currentUserEmail = '';
             cloudSyncState.currentUserRole = '';
@@ -206,15 +215,16 @@ async function initializeAuth(config) {
                     setAuthMessage('Please enter your email first.', true);
                     return;
                 }
-                if (email.toLowerCase() !== ADMIN_LOGIN_EMAIL) {
-                    setAuthMessage('你不是管理员', true);
+                const role = resolveLocalRole(email);
+                if (!role) {
+                    setAuthMessage('No local permission for this email.', true);
                     return;
                 }
 
                 cloudSyncState.currentUserEmail = email;
-                cloudSyncState.currentUserRole = 'admin';
-                saveLocalAuthSession(email, 'admin');
-                setAuthMessage('Local admin mode enabled.');
+                cloudSyncState.currentUserRole = role;
+                saveLocalAuthSession(email, role);
+                setAuthMessage(role === 'admin' ? 'Local admin mode enabled.' : 'Local editor mode enabled.');
                 updateAuthUi();
                 updateAdminNavAccess();
                 applyPermissionMode();
@@ -228,7 +238,7 @@ async function initializeAuth(config) {
                 cloudSyncState.currentUserEmail = '';
                 cloudSyncState.currentUserRole = '';
                 clearLocalAuthSession();
-                setAuthMessage('Signed out from local admin mode.');
+                setAuthMessage('Signed out from local mode.');
                 updateAuthUi();
                 updateAdminNavAccess();
                 applyPermissionMode();
@@ -236,7 +246,7 @@ async function initializeAuth(config) {
             });
         }
 
-        setAuthMessage('Local mode: only li.he.7@pg.com can sign in as admin.');
+        setAuthMessage('Local mode: admin (li.he.7@pg.com) and approved editor emails can sign in.');
         updateAuthUi();
         updateAdminNavAccess();
         return;
