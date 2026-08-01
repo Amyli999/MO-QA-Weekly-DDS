@@ -14,8 +14,9 @@
                 <div class="hero-badge">Workspace Member Access</div>
                 <div id="admin-auth-status" class="sync-status sync-local">Not signed in</div>
                 <div class="auth-controls">
+                    <div class="admin-login-title">Admin Log In</div>
                     <input id="admin-auth-email" type="email" placeholder="you@company.com" aria-label="Admin login email">
-                    <button id="admin-login-btn" type="button">Send Login Link</button>
+                    <button id="admin-login-btn" type="button">sign in</button>
                     <button id="admin-logout-btn" type="button" class="secondary-btn">Logout</button>
                 </div>
                 <div id="admin-message" class="auth-message"></div>
@@ -78,7 +79,7 @@
         </section>
     </div>
 
-    <script src="../cloud-config.js?v=20260727p"></script>
+    <script src="../cloud-config.js?v=20260801a"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
         const config = window.DDS_CLOUD_CONFIG || {};
@@ -86,6 +87,7 @@
         const workspaceConfigStorageKey = 'weeklyDDSWorkspaceConfigState';
         const triggerDateStorageKey = 'weeklyDDSTriggersDateState';
         const triggerStateStorageKey = 'weeklyDDSTriggersState';
+        const adminLoginEmail = 'li.he.7@pg.com';
         const defaultReminderItems = [
             { key: 'project-kickoff', label: 'Any project kick off or SOS' },
             { key: 'leadership-visit', label: 'Any leadership/external visit in +/- 1 week' },
@@ -219,7 +221,6 @@
         }
 
         function canManage() {
-            if (!isCloudReady()) return true;
             return state.role === 'admin';
         }
 
@@ -228,7 +229,7 @@
             const disabled = !canManage();
             if (warning) {
                 if (!isCloudReady()) {
-                    warning.textContent = 'Local mode: member list is stored in this browser only.';
+                    warning.textContent = 'Local mode: sign-in is unavailable. Admin management is disabled.';
                 } else if (!state.accessToken) {
                     warning.textContent = 'Please sign in first.';
                 } else if (disabled) {
@@ -401,7 +402,7 @@
 
         async function fetchMyRole() {
             if (!isCloudReady()) {
-                state.role = 'admin';
+                state.role = '';
                 return;
             }
 
@@ -639,13 +640,18 @@
         async function initAdmin() {
             document.getElementById('admin-login-btn')?.addEventListener('click', async () => {
                 if (!isCloudReady()) {
-                    setMessage('Local mode is active. Cloud login is not required.');
+                    setMessage('Local mode: sign-in is unavailable. Open deployed site to log in as admin.', true);
                     return;
                 }
 
                 const email = String(document.getElementById('admin-auth-email')?.value || '').trim();
                 if (!email) {
                     setMessage('Please enter email first.', true);
+                    return;
+                }
+
+                if (email.toLowerCase() !== adminLoginEmail) {
+                    alert('你不是管理员');
                     return;
                 }
 
@@ -688,8 +694,8 @@
 
             if (!isCloudReady()) {
                 setAuthStatus('Local mode', 'sync-local');
-                setMessage('Cloud not configured. Using browser local member list.');
-                state.role = 'admin';
+                setMessage('Local mode is read-only for Admin page. Use deployed site to sign in as admin.');
+                state.role = '';
                 await loadMembers();
                 applyManageMode();
                 return;

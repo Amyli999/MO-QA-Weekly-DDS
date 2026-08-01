@@ -93,12 +93,14 @@ function updateAuthUi() {
 }
 
 function hasWritePermission() {
-    if (!cloudSyncState.enabled || !cloudSyncState.requireAuth) return true;
+    if (!cloudSyncState.enabled) return false;
+    if (!cloudSyncState.requireAuth) return true;
     return cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
 }
 
 function canManageWorkspaceContent() {
-    if (!cloudSyncState.enabled || !cloudSyncState.requireAuth) return true;
+    if (!cloudSyncState.enabled) return false;
+    if (!cloudSyncState.requireAuth) return true;
     return cloudSyncState.currentUserRole === 'admin';
 }
 
@@ -146,6 +148,7 @@ async function fetchCurrentUserRole() {
 
 async function initializeAuth(config) {
     if (!cloudSyncState.enabled) {
+        setAuthMessage('Local mode: sign-in is unavailable, dashboard is read-only. Use deployed site for cloud login.');
         updateAuthUi();
         return;
     }
