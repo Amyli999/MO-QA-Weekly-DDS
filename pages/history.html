@@ -171,6 +171,7 @@
         }
 
         function removeNotesForEntry(entryIndex) {
+            if (!historyAdminState.canDelete) return;
             const archive = loadState('weeklyDDSHistoryArchive', []);
             const target = archive[entryIndex];
             if (!target) return;
@@ -180,6 +181,7 @@
         }
 
         function removeRemovedItem(entryIndex, removedIndex) {
+            if (!historyAdminState.canDelete) return;
             const archive = loadState('weeklyDDSHistoryArchive', []);
             const target = archive[entryIndex];
             if (!target || !Array.isArray(target.removedItems)) return;
@@ -482,6 +484,19 @@
             guardAdminNav().catch(() => null)
         ]).finally(() => {
             renderHistoryArchive();
+        });
+
+        window.addEventListener('storage', () => {
+            resolveAdminPermission()
+                .catch(() => null)
+                .finally(() => renderHistoryArchive());
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible') return;
+            resolveAdminPermission()
+                .catch(() => null)
+                .finally(() => renderHistoryArchive());
         });
     </script>
 </body>

@@ -235,8 +235,8 @@ async function initializeAuth(config) {
                 setAuthMessage(role === 'admin' ? 'Local admin mode enabled.' : 'Local editor mode enabled.');
                 updateAuthUi();
                 updateAdminNavAccess();
-                applyPermissionMode();
                 renderAllSections();
+                applyPermissionMode();
             });
         }
 
@@ -249,8 +249,8 @@ async function initializeAuth(config) {
                 setAuthMessage('Signed out from local mode.');
                 updateAuthUi();
                 updateAdminNavAccess();
-                applyPermissionMode();
                 renderAllSections();
+                applyPermissionMode();
             });
         }
 
@@ -1146,6 +1146,7 @@ function renderTriggerGrid() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const canManageTrigger = canManageWorkspaceContent();
+    const canEditTriggerValues = hasWritePermission();
 
     if (startDateInput) {
         startDateInput.value = dateState.startDate || '';
@@ -1228,6 +1229,7 @@ function renderTriggerGrid() {
             input.inputMode = 'numeric';
             input.pattern = '[0-9]*';
             input.value = rowEntry.values[columnIndex] ?? '0';
+            input.disabled = !canEditTriggerValues;
             input.dataset.future = String(columnDate.getTime() > today.getTime());
             input.dataset.rowIndex = String(rowEntry.sourceIndex);
             input.dataset.columnIndex = String(columnIndex);
