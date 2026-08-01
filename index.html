@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CN MO QA Weekly DDS Dashboard</title>
-    <link rel="stylesheet" href="css/style.css?v=20260801a">
+    <link rel="stylesheet" href="css/style.css?v=20260801b">
 </head>
 
 <body>
@@ -23,6 +23,7 @@
                         <button id="auth-login-btn" type="button">Sign In</button>
                         <button id="auth-logout-btn" type="button" class="secondary-btn">Log Out</button>
                     </div>
+                    <div id="auth-user-label" class="auth-user-label">Not signed in</div>
                     <div id="auth-message" class="auth-message"></div>
                 </div>
             </div>
@@ -49,11 +50,6 @@
                     <div class="module-1-panel">
                         <h3>Reminder</h3>
                         <ul id="reminder-list"></ul>
-                        <div id="reminder-editor-panel" class="reminder-editor-panel" hidden>
-                            <label for="reminder-editor-input">Reminder details (one item per line)</label>
-                            <textarea id="reminder-editor-input" rows="5"></textarea>
-                            <button id="reminder-editor-save-btn" type="button" class="secondary-btn">Save Reminder</button>
-                        </div>
                     </div>
                     <div class="module-1-panel module-1-panel--notes">
                         <h3>Notes</h3>
@@ -146,7 +142,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="cloud-config.js?v=20260801a"></script>
-    <script src="script.js?v=20260801d"></script>
+    <script src="script.js?v=20260801e"></script>
 </body>
 
 </html>

@@ -87,20 +87,28 @@ function setAuthMessage(message, isError = false) {
 function updateAdminNavAccess() {
     const historyLink = document.getElementById('history-nav-link');
     const adminLink = document.getElementById('admin-nav-link');
-    const restrictedLinks = [historyLink, adminLink].filter(Boolean);
-    if (!restrictedLinks.length) return;
+    if (!historyLink && !adminLink) return;
 
-    let allowAdminFeatures = false;
+    let allowHistory = false;
+    let allowAdmin = false;
+
     if (!cloudSyncState.enabled) {
-        allowAdminFeatures = cloudSyncState.currentUserRole === 'admin';
+        allowHistory = cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
+        allowAdmin = cloudSyncState.currentUserRole === 'admin';
     } else if (!cloudSyncState.requireAuth) {
-        allowAdminFeatures = true;
+        allowHistory = true;
+        allowAdmin = true;
     } else {
-        allowAdminFeatures = cloudSyncState.currentUserRole === 'admin';
+        allowHistory = cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
+        allowAdmin = cloudSyncState.currentUserRole === 'admin';
     }
 
-    restrictedLinks.forEach((link) => {
-        if (allowAdminFeatures) {
+    [
+        { link: historyLink, allowed: allowHistory },
+        { link: adminLink, allowed: allowAdmin }
+    ].forEach(({ link, allowed }) => {
+        if (!link) return;
+        if (allowed) {
             link.classList.remove('nav-disabled');
             link.dataset.locked = 'false';
         } else {
@@ -915,54 +923,8 @@ function renderGeneralNotes() {
     const state = getGeneralState();
     const reminderList = document.getElementById('reminder-list');
     const notesInput = document.getElementById('general-notes-input');
-    const reminderEditorPanel = document.getElementById('reminder-editor-panel');
-    const reminderEditorInput = document.getElementById('reminder-editor-input');
-    const reminderEditorSaveButton = document.getElementById('reminder-editor-save-btn');
 
     reminderList.innerHTML = getReminderItems().map((item) => `<li>${item.label}</li>`).join('');
-
-    const canManageReminder = canManageWorkspaceContent();
-    if (reminderEditorPanel) {
-        reminderEditorPanel.hidden = !canManageReminder;
-    }
-
-    if (reminderEditorInput) {
-        reminderEditorInput.value = getReminderItems().map((item) => item.label).join('\n');
-        reminderEditorInput.disabled = !canManageReminder;
-    }
-
-    if (reminderEditorSaveButton) {
-        reminderEditorSaveButton.disabled = !canManageReminder;
-        if (!reminderEditorSaveButton.dataset.boundReminderEditor) {
-            reminderEditorSaveButton.dataset.boundReminderEditor = 'true';
-            reminderEditorSaveButton.addEventListener('click', () => {
-                if (!canManageWorkspaceContent()) {
-                    setAuthMessage('Only admin can edit reminder details.', true);
-                    return;
-                }
-
-                const nextLines = String(reminderEditorInput?.value || '')
-                    .split(/\r?\n/)
-                    .map((line) => line.trim())
-                    .filter(Boolean);
-
-                if (!nextLines.length) {
-                    setAuthMessage('Reminder details cannot be empty.', true);
-                    return;
-                }
-
-                const workspaceConfig = getWorkspaceConfig();
-                workspaceConfig.reminderItems = nextLines.map((label, index) => ({
-                    key: buildReminderConfigKey(label, index),
-                    label
-                }));
-
-                saveState(WORKSPACE_CONFIG_STORAGE_KEY, workspaceConfig);
-                setAuthMessage('Reminder details saved.');
-                renderGeneralNotes();
-            });
-        }
-    }
 
     const noteValue = typeof state.notes === 'string'
         ? state.notes

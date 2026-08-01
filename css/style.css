@@ -210,6 +210,16 @@ button:hover {
     line-height: 1.25;
 }
 
+.auth-user-label {
+    width: 100%;
+    color: rgba(255, 255, 255, 0.95);
+    font-size: 0.78rem;
+    text-align: right;
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.2;
+}
+
 .top-nav {
     display: flex;
     gap: 10px;
@@ -323,28 +333,6 @@ main {
     padding: 0;
     border-radius: 50%;
     font-size: 0.75rem;
-}
-
-.reminder-editor-panel {
-    margin-top: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.reminder-editor-panel label {
-    font-size: 0.86rem;
-    color: var(--muted);
-}
-
-.reminder-editor-panel textarea {
-    width: 100%;
-    min-height: 108px;
-}
-
-.reminder-editor-panel button {
-    width: fit-content;
-    min-width: 120px;
 }
 
 .table-wrapper {

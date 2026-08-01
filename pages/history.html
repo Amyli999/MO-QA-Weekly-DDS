@@ -109,12 +109,23 @@
         </section>
     </div>
 
-    <script src="../cloud-config.js?v=20260727p"></script>
+    <script src="../cloud-config.js?v=20260801b"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
+        const localAuthStorageKey = 'weeklyDDSLocalAuthSession';
         const historyAdminState = {
             canDelete: false
         };
+
+        function getLocalRole() {
+            try {
+                const raw = localStorage.getItem(localAuthStorageKey);
+                const parsed = raw ? JSON.parse(raw) : null;
+                return String(parsed?.role || '').trim().toLowerCase();
+            } catch (_error) {
+                return '';
+            }
+        }
 
         function loadState(key, fallback) {
             try {
@@ -354,7 +365,7 @@
             const requiresGuard = Boolean(cfg.enabled && cfg.requireAuth && cfg.baseUrl && cfg.anonKey);
 
             if (!requiresGuard) {
-                historyAdminState.canDelete = true;
+                historyAdminState.canDelete = getLocalRole() === 'admin';
                 applyDeleteVisibility();
                 return;
             }
@@ -413,7 +424,20 @@
 
             const cfg = window.DDS_CLOUD_CONFIG || {};
             const requiresGuard = Boolean(cfg.enabled && cfg.requireAuth && cfg.baseUrl && cfg.anonKey);
-            if (!requiresGuard || !window.supabase || typeof window.supabase.createClient !== 'function') return;
+            if (!requiresGuard) {
+                const allowAdmin = getLocalRole() === 'admin';
+                if (!allowAdmin) {
+                    link.classList.add('nav-disabled');
+                    link.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        const msg = document.getElementById('page-access-message');
+                        if (msg) msg.textContent = 'Only admin can open Admin page.';
+                    });
+                }
+                return;
+            }
+
+            if (!window.supabase || typeof window.supabase.createClient !== 'function') return;
 
             const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey, {
                 auth: {
@@ -447,7 +471,7 @@
                 link.addEventListener('click', (event) => {
                     event.preventDefault();
                     const msg = document.getElementById('page-access-message');
-                    if (msg) msg.textContent = 'need access';
+                    if (msg) msg.textContent = 'Only admin can open Admin page.';
                 });
             }
         }
