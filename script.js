@@ -1,11 +1,11 @@
-const reminderItems = [
+const DEFAULT_REMINDER_ITEMS = [
     { key: 'project-kickoff', label: 'Any project kick off or SOS' },
     { key: 'leadership-visit', label: 'Any leadership/external visit in +/- 1 week' },
     { key: 'vacation-plan', label: 'Coming onsite/vacation plan' },
     { key: 'shipment-trend', label: 'Monthly shipment trend (last week)' }
 ];
 
-const triggerRows = [
+const DEFAULT_TRIGGER_ROWS = [
     'Any QI/QA happen in last week?',
     'Any open QIs?',
     'Any product on hold which initiated by DC (> 50cs)?',
@@ -13,6 +13,8 @@ const triggerRows = [
     'Any 3PL vendor change or 3PL QA change?',
     'Any MO related global SOP/Policy plan to change?'
 ];
+
+const WORKSPACE_CONFIG_STORAGE_KEY = 'weeklyDDSWorkspaceConfigState';
 
 const teamMembers = ['Amy', 'Ben', 'Cathy', 'Diana', 'Ethan', 'Frank'];
 const followupBucketOrder = ['DDS FU', 'Command Center', 'Quality System Related', 'Others'];
@@ -549,9 +551,11 @@ function getWeekRange(date) {
 
 function getDateStateForCurrentWeek() {
     const currentWeekKey = getWeekKey(new Date());
+    const workspaceConfig = getWorkspaceConfig();
+    const defaultStartDate = String(workspaceConfig.defaultTriggerStartDate || '').trim() || startOfWeek(new Date()).toISOString().slice(0, 10);
     const rawState = loadState('weeklyDDSTriggersDateState', { startDate: '', weekKey: '' });
     const state = {
-        startDate: rawState.startDate || '',
+        startDate: rawState.startDate || defaultStartDate,
         weekKey: rawState.weekKey || currentWeekKey
     };
 
@@ -559,7 +563,7 @@ function getDateStateForCurrentWeek() {
         // Keep the trigger timeline anchored to the manually selected start date.
         // Only initialize with current week start when no manual date has been set.
         if (!state.startDate) {
-            state.startDate = startOfWeek(new Date()).toISOString().slice(0, 10);
+            state.startDate = defaultStartDate;
         }
 
         state.weekKey = currentWeekKey;
@@ -578,6 +582,60 @@ function loadState(key, fallback) {
     } catch (error) {
         return fallback;
     }
+}
+
+function buildReminderConfigKey(label, index) {
+    const base = String(label || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    return base || `reminder-${index + 1}`;
+}
+
+function normalizeWorkspaceConfig(config = {}) {
+    const reminderSource = Array.isArray(config.reminderItems) && config.reminderItems.length
+        ? config.reminderItems
+        : DEFAULT_REMINDER_ITEMS;
+    const triggerSource = Array.isArray(config.triggerRows) && config.triggerRows.length
+        ? config.triggerRows
+        : DEFAULT_TRIGGER_ROWS;
+
+    const reminderItems = reminderSource
+        .map((item, index) => {
+            if (typeof item === 'string') {
+                const label = item.trim();
+                return label ? { key: buildReminderConfigKey(label, index), label } : null;
+            }
+
+            const label = String(item?.label || '').trim();
+            if (!label) return null;
+            const key = String(item?.key || '').trim() || buildReminderConfigKey(label, index);
+            return { key, label };
+        })
+        .filter(Boolean);
+
+    const triggerRows = triggerSource
+        .map((item) => String(item || '').trim())
+        .filter(Boolean);
+
+    return {
+        reminderItems: reminderItems.length ? reminderItems : DEFAULT_REMINDER_ITEMS.map((item) => ({ ...item })),
+        triggerRows: triggerRows.length ? triggerRows : [...DEFAULT_TRIGGER_ROWS],
+        defaultTriggerStartDate: String(config.defaultTriggerStartDate || '').trim()
+    };
+}
+
+function getWorkspaceConfig() {
+    return normalizeWorkspaceConfig(loadState(WORKSPACE_CONFIG_STORAGE_KEY, {}));
+}
+
+function getReminderItems() {
+    return getWorkspaceConfig().reminderItems;
+}
+
+function getTriggerRows() {
+    return getWorkspaceConfig().triggerRows;
 }
 
 function saveState(key, value) {
@@ -645,6 +703,7 @@ function isTriggerEditor(secret) {
 }
 
 function getDefaultTriggerState() {
+    const triggerRows = getTriggerRows();
     return {
         labels: [...triggerRows],
         values: Array.from({ length: triggerRows.length }, () => []),
@@ -800,7 +859,7 @@ function renderGeneralNotes() {
     const reminderList = document.getElementById('reminder-list');
     const notesInput = document.getElementById('general-notes-input');
 
-    reminderList.innerHTML = reminderItems.map((item) => `<li>${item.label}</li>`).join('');
+    reminderList.innerHTML = getReminderItems().map((item) => `<li>${item.label}</li>`).join('');
 
     const noteValue = typeof state.notes === 'string'
         ? state.notes
@@ -997,7 +1056,7 @@ function renderTriggerGrid() {
     const dateState = getDateStateForCurrentWeek();
     const weekDates = buildWeekHeaders();
     const state = getTriggerState();
-    const labels = Array.isArray(state.labels) && state.labels.length ? state.labels : [...triggerRows];
+    const labels = Array.isArray(state.labels) && state.labels.length ? state.labels : [...getTriggerRows()];
     const values = Array.isArray(state.values) ? state.values : [];
     const orders = Array.isArray(state.orders) ? state.orders : labels.map((_, index) => index + 1);
     const normalizedValues = labels.map((_, rowIndex) => {
