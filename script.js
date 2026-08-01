@@ -15,9 +15,6 @@ const DEFAULT_TRIGGER_ROWS = [
 ];
 
 const WORKSPACE_CONFIG_STORAGE_KEY = 'weeklyDDSWorkspaceConfigState';
-const ADMIN_LOGIN_EMAIL = 'li.he.7@pg.com';
-const LOCAL_EDITOR_EMAILS = ['yu.h.1@pg.com'];
-const LOCAL_AUTH_STORAGE_KEY = 'weeklyDDSLocalAuthSession';
 
 const teamMembers = ['Amy', 'Ben', 'Cathy', 'Diana', 'Ethan', 'Frank'];
 const followupBucketOrder = ['DDS FU', 'Command Center', 'Quality System Related', 'Others'];
@@ -42,41 +39,6 @@ const cloudSyncState = {
     activeRequests: 0
 };
 
-function loadLocalAuthSession() {
-    try {
-        const raw = localStorage.getItem(LOCAL_AUTH_STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : null;
-        if (!parsed || typeof parsed !== 'object') return null;
-
-        const email = String(parsed.email || '').trim();
-        const role = String(parsed.role || '').trim();
-        if (!email || !role) return null;
-
-        return { email, role };
-    } catch (_error) {
-        return null;
-    }
-}
-
-function saveLocalAuthSession(email, role) {
-    localStorage.setItem(LOCAL_AUTH_STORAGE_KEY, JSON.stringify({
-        email: String(email || '').trim(),
-        role: String(role || '').trim()
-    }));
-}
-
-function clearLocalAuthSession() {
-    localStorage.removeItem(LOCAL_AUTH_STORAGE_KEY);
-}
-
-function resolveLocalRole(email) {
-    const normalized = String(email || '').trim().toLowerCase();
-    if (!normalized) return '';
-    if (normalized === ADMIN_LOGIN_EMAIL) return 'admin';
-    if (LOCAL_EDITOR_EMAILS.includes(normalized)) return 'editor';
-    return '';
-}
-
 function setAuthMessage(message, isError = false) {
     const authMessage = document.getElementById('auth-message');
     if (!authMessage) return;
@@ -86,26 +48,20 @@ function setAuthMessage(message, isError = false) {
 
 function updateAdminNavAccess() {
     const historyLink = document.getElementById('history-nav-link');
-    const adminLink = document.getElementById('admin-nav-link');
-    if (!historyLink && !adminLink) return;
+    if (!historyLink) return;
 
     let allowHistory = false;
-    let allowAdmin = false;
 
     if (!cloudSyncState.enabled) {
-        allowHistory = cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
-        allowAdmin = cloudSyncState.currentUserRole === 'admin';
+        allowHistory = false;
     } else if (!cloudSyncState.requireAuth) {
         allowHistory = true;
-        allowAdmin = true;
     } else {
         allowHistory = cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
-        allowAdmin = cloudSyncState.currentUserRole === 'admin';
     }
 
     [
-        { link: historyLink, allowed: allowHistory },
-        { link: adminLink, allowed: allowAdmin }
+        { link: historyLink, allowed: allowHistory }
     ].forEach(({ link, allowed }) => {
         if (!link) return;
         if (allowed) {
@@ -146,13 +102,13 @@ function updateAuthUi() {
 }
 
 function hasWritePermission() {
-    if (!cloudSyncState.enabled) return cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
+    if (!cloudSyncState.enabled) return false;
     if (!cloudSyncState.requireAuth) return true;
     return cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
 }
 
 function canManageWorkspaceContent() {
-    if (!cloudSyncState.enabled) return cloudSyncState.currentUserRole === 'admin';
+    if (!cloudSyncState.enabled) return false;
     if (!cloudSyncState.requireAuth) return true;
     return cloudSyncState.currentUserRole === 'admin';
 }
@@ -200,66 +156,6 @@ async function fetchCurrentUserRole() {
 }
 
 async function initializeAuth(config) {
-    if (!cloudSyncState.enabled) {
-        const authInput = document.getElementById('auth-email-input');
-        const loginButton = document.getElementById('auth-login-btn');
-        const logoutButton = document.getElementById('auth-logout-btn');
-        const savedSession = loadLocalAuthSession();
-
-        if (savedSession?.email && savedSession.role === resolveLocalRole(savedSession.email)) {
-            cloudSyncState.currentUserEmail = savedSession.email;
-            cloudSyncState.currentUserRole = savedSession.role;
-        } else {
-            cloudSyncState.currentUserEmail = '';
-            cloudSyncState.currentUserRole = '';
-            clearLocalAuthSession();
-        }
-
-        if (loginButton && !loginButton.dataset.boundLocalAuth) {
-            loginButton.dataset.boundLocalAuth = 'true';
-            loginButton.addEventListener('click', () => {
-                const email = String(authInput?.value || '').trim();
-                if (!email) {
-                    setAuthMessage('Please enter your email first.', true);
-                    return;
-                }
-                const role = resolveLocalRole(email);
-                if (!role) {
-                    setAuthMessage('No local permission for this email.', true);
-                    return;
-                }
-
-                cloudSyncState.currentUserEmail = email;
-                cloudSyncState.currentUserRole = role;
-                saveLocalAuthSession(email, role);
-                setAuthMessage(role === 'admin' ? 'Local admin mode enabled.' : 'Local editor mode enabled.');
-                updateAuthUi();
-                updateAdminNavAccess();
-                renderAllSections();
-                applyPermissionMode();
-            });
-        }
-
-        if (logoutButton && !logoutButton.dataset.boundLocalAuth) {
-            logoutButton.dataset.boundLocalAuth = 'true';
-            logoutButton.addEventListener('click', () => {
-                cloudSyncState.currentUserEmail = '';
-                cloudSyncState.currentUserRole = '';
-                clearLocalAuthSession();
-                setAuthMessage('Signed out from local mode.');
-                updateAuthUi();
-                updateAdminNavAccess();
-                renderAllSections();
-                applyPermissionMode();
-            });
-        }
-
-        setAuthMessage('Local mode: admin (li.he.7@pg.com) and approved editor emails can sign in.');
-        updateAuthUi();
-        updateAdminNavAccess();
-        return;
-    }
-
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
         setAuthMessage('Supabase library not loaded.', true);
         updateAuthUi();
@@ -1544,15 +1440,14 @@ function init() {
 
         document.getElementById('current-week-label').textContent = getWeekDisplayRange(new Date());
 
-        const adminLink = document.getElementById('admin-nav-link');
         const historyLink = document.getElementById('history-nav-link');
-        [historyLink, adminLink].filter(Boolean).forEach((link) => {
+        [historyLink].filter(Boolean).forEach((link) => {
             if (link.dataset.boundAccessGuard) return;
             link.dataset.boundAccessGuard = 'true';
             link.addEventListener('click', (event) => {
                 if (link.dataset.locked === 'true') {
                     event.preventDefault();
-                    setAuthMessage('Only admin can open DDS history and Admin pages.', true);
+                    setAuthMessage('Only admin/editor can open DDS history.', true);
                 }
             });
         });

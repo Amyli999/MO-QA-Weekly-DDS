@@ -19,7 +19,6 @@
         <nav class="top-nav">
             <a href="../index.html">DDS Dashboard</a>
             <a class="active" href="masterplan.html">Master Plan</a>
-            <a id="admin-nav-link" href="admin.html">Admin</a>
         </nav>
 
         <div id="page-access-message" class="permission-banner"></div>
@@ -30,55 +29,6 @@
         </section>
     </div>
 
-    <script src="../cloud-config.js?v=20260727p"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script>
-        async function guardAdminNav() {
-            const link = document.getElementById('admin-nav-link');
-            if (!link) return;
-
-            const cfg = window.DDS_CLOUD_CONFIG || {};
-            const requiresGuard = Boolean(cfg.enabled && cfg.requireAuth && cfg.baseUrl && cfg.anonKey);
-            if (!requiresGuard || !window.supabase || typeof window.supabase.createClient !== 'function') return;
-
-            const client = window.supabase.createClient(String(cfg.baseUrl).replace(/\/$/, ''), cfg.anonKey, {
-                auth: {
-                    persistSession: true,
-                    autoRefreshToken: true,
-                    detectSessionInUrl: true
-                }
-            });
-            const { data: sessionData } = await client.auth.getSession();
-            const accessToken = sessionData?.session?.access_token || '';
-            const email = String(sessionData?.session?.user?.email || '').toLowerCase();
-
-            let allowAdmin = false;
-            if (accessToken && email) {
-                const url = `${String(cfg.baseUrl).replace(/\/$/, '')}/rest/v1/dds_workspace_members?select=role&workspace_id=eq.${encodeURIComponent(String(cfg.workspaceId || 'cn-mo-qa-default'))}&email=eq.${encodeURIComponent(email)}`;
-                const response = await fetch(url, {
-                    method: 'GET',
-                    headers: {
-                        apikey: cfg.anonKey,
-                        Authorization: `Bearer ${accessToken}`
-                    }
-                });
-                if (response.ok) {
-                    const rows = await response.json();
-                    allowAdmin = Array.isArray(rows) && rows[0]?.role === 'admin';
-                }
-            }
-
-            if (!allowAdmin) {
-                link.classList.add('nav-disabled');
-                link.addEventListener('click', (event) => {
-                    event.preventDefault();
-                    const msg = document.getElementById('page-access-message');
-                    if (msg) msg.textContent = 'need access';
-                });
-            }
-        }
-
-        guardAdminNav().catch(() => null);
-    </script>
+    <script src="../cloud-config.js?v=20260802b"></script>
 </body>
 </html>
