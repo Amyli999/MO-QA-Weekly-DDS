@@ -229,7 +229,9 @@
             const disabled = !canManage();
             if (warning) {
                 if (!isCloudReady()) {
-                    warning.textContent = 'Local mode: sign-in is unavailable. Admin management is disabled.';
+                    warning.textContent = disabled
+                        ? 'Local mode: enter li.he.7@pg.com and sign in to enable admin management.'
+                        : '';
                 } else if (!state.accessToken) {
                     warning.textContent = 'Please sign in first.';
                 } else if (disabled) {
@@ -640,7 +642,22 @@
         async function initAdmin() {
             document.getElementById('admin-login-btn')?.addEventListener('click', async () => {
                 if (!isCloudReady()) {
-                    setMessage('Local mode: sign-in is unavailable. Open deployed site to log in as admin.', true);
+                    const email = String(document.getElementById('admin-auth-email')?.value || '').trim();
+                    if (!email) {
+                        setMessage('Please enter email first.', true);
+                        return;
+                    }
+                    if (email.toLowerCase() !== adminLoginEmail) {
+                        alert('你不是管理员');
+                        return;
+                    }
+
+                    state.email = email;
+                    state.role = 'admin';
+                    setAuthStatus(`Signed in: ${state.email} (admin local)`, 'sync-synced');
+                    setMessage('Local admin mode enabled.');
+                    applyManageMode();
+                    renderMembers();
                     return;
                 }
 
@@ -670,8 +687,17 @@
             });
 
             document.getElementById('admin-logout-btn')?.addEventListener('click', async () => {
+                if (!isCloudReady()) {
+                    state.email = '';
+                    state.role = '';
+                    setAuthStatus('Local mode', 'sync-local');
+                    setMessage('Signed out from local admin mode.');
+                    applyManageMode();
+                    renderMembers();
+                    return;
+                }
                 if (!state.authClient) {
-                    setMessage('Local mode has no cloud session to logout.');
+                    setMessage('Cloud session is unavailable.');
                     return;
                 }
                 await state.authClient.auth.signOut();
@@ -694,7 +720,7 @@
 
             if (!isCloudReady()) {
                 setAuthStatus('Local mode', 'sync-local');
-                setMessage('Local mode is read-only for Admin page. Use deployed site to sign in as admin.');
+                setMessage('Local mode: enter li.he.7@pg.com and click sign in to enable admin management.');
                 state.role = '';
                 await loadMembers();
                 applyManageMode();

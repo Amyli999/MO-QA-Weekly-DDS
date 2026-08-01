@@ -15,6 +15,8 @@ const DEFAULT_TRIGGER_ROWS = [
 ];
 
 const WORKSPACE_CONFIG_STORAGE_KEY = 'weeklyDDSWorkspaceConfigState';
+const ADMIN_LOGIN_EMAIL = 'li.he.7@pg.com';
+const LOCAL_AUTH_STORAGE_KEY = 'weeklyDDSLocalAuthSession';
 
 const teamMembers = ['Amy', 'Ben', 'Cathy', 'Diana', 'Ethan', 'Frank'];
 const followupBucketOrder = ['DDS FU', 'Command Center', 'Quality System Related', 'Others'];
@@ -38,6 +40,33 @@ const cloudSyncState = {
     flushTimer: null,
     activeRequests: 0
 };
+
+function loadLocalAuthSession() {
+    try {
+        const raw = localStorage.getItem(LOCAL_AUTH_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (!parsed || typeof parsed !== 'object') return null;
+
+        const email = String(parsed.email || '').trim();
+        const role = String(parsed.role || '').trim();
+        if (!email || !role) return null;
+
+        return { email, role };
+    } catch (_error) {
+        return null;
+    }
+}
+
+function saveLocalAuthSession(email, role) {
+    localStorage.setItem(LOCAL_AUTH_STORAGE_KEY, JSON.stringify({
+        email: String(email || '').trim(),
+        role: String(role || '').trim()
+    }));
+}
+
+function clearLocalAuthSession() {
+    localStorage.removeItem(LOCAL_AUTH_STORAGE_KEY);
+}
 
 function setAuthMessage(message, isError = false) {
     const authMessage = document.getElementById('auth-message');
@@ -83,7 +112,7 @@ function updateAuthUi() {
         logoutButton.disabled = !signedIn;
     }
     if (loginButton) {
-        loginButton.disabled = !cloudSyncState.authClient;
+        loginButton.disabled = cloudSyncState.enabled && !cloudSyncState.authClient;
     }
     if (authInput) {
         if (signedIn) {
@@ -93,13 +122,13 @@ function updateAuthUi() {
 }
 
 function hasWritePermission() {
-    if (!cloudSyncState.enabled) return false;
+    if (!cloudSyncState.enabled) return cloudSyncState.currentUserRole === 'admin';
     if (!cloudSyncState.requireAuth) return true;
     return cloudSyncState.currentUserRole === 'admin' || cloudSyncState.currentUserRole === 'editor';
 }
 
 function canManageWorkspaceContent() {
-    if (!cloudSyncState.enabled) return false;
+    if (!cloudSyncState.enabled) return cloudSyncState.currentUserRole === 'admin';
     if (!cloudSyncState.requireAuth) return true;
     return cloudSyncState.currentUserRole === 'admin';
 }
@@ -148,8 +177,59 @@ async function fetchCurrentUserRole() {
 
 async function initializeAuth(config) {
     if (!cloudSyncState.enabled) {
-        setAuthMessage('Local mode: sign-in is unavailable, dashboard is read-only. Use deployed site for cloud login.');
+        const authInput = document.getElementById('auth-email-input');
+        const loginButton = document.getElementById('auth-login-btn');
+        const logoutButton = document.getElementById('auth-logout-btn');
+        const savedSession = loadLocalAuthSession();
+
+        if (savedSession?.email?.toLowerCase() === ADMIN_LOGIN_EMAIL && savedSession.role === 'admin') {
+            cloudSyncState.currentUserEmail = savedSession.email;
+            cloudSyncState.currentUserRole = 'admin';
+        } else {
+            cloudSyncState.currentUserEmail = '';
+            cloudSyncState.currentUserRole = '';
+            clearLocalAuthSession();
+        }
+
+        if (loginButton && !loginButton.dataset.boundLocalAuth) {
+            loginButton.dataset.boundLocalAuth = 'true';
+            loginButton.addEventListener('click', () => {
+                const email = String(authInput?.value || '').trim();
+                if (!email) {
+                    setAuthMessage('Please enter your email first.', true);
+                    return;
+                }
+                if (email.toLowerCase() !== ADMIN_LOGIN_EMAIL) {
+                    setAuthMessage('你不是管理员', true);
+                    return;
+                }
+
+                cloudSyncState.currentUserEmail = email;
+                cloudSyncState.currentUserRole = 'admin';
+                saveLocalAuthSession(email, 'admin');
+                setAuthMessage('Local admin mode enabled.');
+                updateAuthUi();
+                applyPermissionMode();
+                renderAllSections();
+            });
+        }
+
+        if (logoutButton && !logoutButton.dataset.boundLocalAuth) {
+            logoutButton.dataset.boundLocalAuth = 'true';
+            logoutButton.addEventListener('click', () => {
+                cloudSyncState.currentUserEmail = '';
+                cloudSyncState.currentUserRole = '';
+                clearLocalAuthSession();
+                setAuthMessage('Signed out from local admin mode.');
+                updateAuthUi();
+                applyPermissionMode();
+                renderAllSections();
+            });
+        }
+
+        setAuthMessage('Local mode: only li.he.7@pg.com can sign in as admin.');
         updateAuthUi();
+        updateAdminNavAccess();
         return;
     }
 
