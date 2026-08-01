@@ -34,6 +34,7 @@ const cloudSyncState = {
     currentUserEmail: '',
     currentUserRole: '',
     authClient: null,
+    identityOnlyMode: false,
     pendingSaves: new Map(),
     flushTimer: null,
     activeRequests: 0
@@ -72,6 +73,39 @@ function updateAdminNavAccess() {
             link.dataset.locked = 'true';
         }
     });
+}
+
+function getMemberAccessSnapshot() {
+    const config = window.DDS_CLOUD_CONFIG || {};
+    const merged = new Map();
+
+    const addEntry = (email, role) => {
+        const normalizedEmail = String(email || '').trim().toLowerCase();
+        const normalizedRole = String(role || '').trim().toLowerCase();
+        if (!normalizedEmail || !normalizedRole) return;
+        merged.set(normalizedEmail, { email: normalizedEmail, role: normalizedRole });
+    };
+
+    if (Array.isArray(config.memberAccess)) {
+        config.memberAccess.forEach((item) => addEntry(item?.email, item?.role));
+    }
+
+    return Array.from(merged.values());
+}
+
+function resolveMemberRoleForEmail(email) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) return '';
+    return getMemberAccessSnapshot().find((item) => item.email === normalizedEmail)?.role || '';
+}
+
+function activateIdentityOnlySession(email, role) {
+    cloudSyncState.accessToken = '';
+    cloudSyncState.currentUserEmail = String(email || '').trim().toLowerCase();
+    cloudSyncState.currentUserRole = String(role || '').trim().toLowerCase();
+    cloudSyncState.identityOnlyMode = true;
+    updateAuthUi();
+    updateAdminNavAccess();
 }
 
 function updateAuthUi() {
@@ -117,24 +151,41 @@ function applyPermissionMode() {
     const readOnly = !hasWritePermission();
     const banner = document.getElementById('permission-banner');
     if (banner) {
-        banner.textContent = readOnly ? 'Read-only mode: viewer access for this email.' : '';
+        if (cloudSyncState.identityOnlyMode && cloudSyncState.currentUserRole) {
+            banner.textContent = `Identity verified: ${cloudSyncState.currentUserRole}.`;
+        } else {
+            banner.textContent = readOnly ? 'Read-only mode: viewer access for this email.' : '';
+        }
     }
 
     document.querySelectorAll('main input, main textarea, main select, main button').forEach((el) => {
         el.disabled = readOnly;
     });
+
+    // Keep admin-only controls locked for non-admin users even when editor write mode is enabled.
+    const canManage = canManageWorkspaceContent();
+    const triggerStartDate = document.getElementById('trigger-start-date');
+    const addTriggerButton = document.getElementById('add-trigger-row-btn');
+    if (triggerStartDate) {
+        triggerStartDate.disabled = !canManage;
+        triggerStartDate.readOnly = !canManage;
+    }
+    if (addTriggerButton) {
+        addTriggerButton.disabled = !canManage;
+    }
 }
 
 function applyAuthSession(session) {
     cloudSyncState.accessToken = session?.access_token || '';
     cloudSyncState.currentUserEmail = session?.user?.email || '';
     cloudSyncState.currentUserRole = '';
+    cloudSyncState.identityOnlyMode = false;
     updateAuthUi();
     updateAdminNavAccess();
 }
 
 async function fetchCurrentUserRole() {
-    if (!cloudSyncState.enabled || !cloudSyncState.accessToken || !cloudSyncState.currentUserEmail) {
+    if (!cloudSyncState.enabled || !cloudSyncState.currentUserEmail) {
         cloudSyncState.currentUserRole = '';
         updateAuthUi();
         return;
@@ -157,7 +208,7 @@ async function fetchCurrentUserRole() {
 
 async function initializeAuth(config) {
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-        setAuthMessage('Supabase library not loaded.', true);
+        setAuthMessage('Access service not available.', true);
         updateAuthUi();
         return;
     }
@@ -214,6 +265,22 @@ async function initializeAuth(config) {
                 return;
             }
 
+            const role = resolveMemberRoleForEmail(email);
+            if (role) {
+                activateIdentityOnlySession(email, role);
+                window.alert(`${email} is ${role}.`);
+                setAuthMessage(`Identity verified: ${email} (${role})`);
+                setSyncIndicator('synced', 'Identity verified');
+                try {
+                    await bootstrapFromCloud();
+                    renderAllSections();
+                    applyPermissionMode();
+                } catch (error) {
+                    setAuthMessage(`Login warning: ${error.message || error}`, true);
+                }
+                return;
+            }
+
             try {
                 setAuthMessage('Sending login link...');
                 const redirectTo = `${window.location.origin}${window.location.pathname}`;
@@ -224,7 +291,7 @@ async function initializeAuth(config) {
                 if (error) {
                     throw error;
                 }
-                setAuthMessage('Login link sent. Check your email inbox.');
+                setAuthMessage('Sign-in link sent. Check your inbox.');
             } catch (error) {
                 setAuthMessage(`Login failed: ${error.message || error}`, true);
             }
@@ -233,46 +300,55 @@ async function initializeAuth(config) {
 
     if (logoutButton) {
         logoutButton.addEventListener('click', async () => {
-            if (!cloudSyncState.authClient) return;
-            await cloudSyncState.authClient.auth.signOut();
+            if (cloudSyncState.authClient) {
+                await cloudSyncState.authClient.auth.signOut();
+            }
+            cloudSyncState.accessToken = '';
+            cloudSyncState.currentUserEmail = '';
+            cloudSyncState.currentUserRole = '';
+            cloudSyncState.identityOnlyMode = false;
             applyAuthSession(null);
             setAuthMessage('Signed out.');
             if (cloudSyncState.requireAuth) {
-                setSyncIndicator('error', 'Login required for cloud sync');
+                setSyncIndicator('error', 'Sign in with your email to continue');
             }
         });
     }
 
-    const { data: sessionData } = await cloudSyncState.authClient.auth.getSession();
-    applyAuthSession(sessionData?.session || null);
+    if (cloudSyncState.authClient) {
+        const { data: sessionData } = await cloudSyncState.authClient.auth.getSession();
+        applyAuthSession(sessionData?.session || null);
 
-    cloudSyncState.authClient.auth.onAuthStateChange(async (_event, session) => {
-        applyAuthSession(session || null);
-        if (cloudSyncState.enabled && (!cloudSyncState.requireAuth || cloudSyncState.accessToken)) {
-            try {
-                if (cloudSyncState.requireAuth) {
-                    await fetchCurrentUserRole();
-                    if (!cloudSyncState.currentUserRole) {
-                        setSyncIndicator('error', 'No workspace permission for this email');
-                        applyPermissionMode();
-                        return;
+        cloudSyncState.authClient.auth.onAuthStateChange(async (_event, session) => {
+            applyAuthSession(session || null);
+            if (cloudSyncState.enabled && (!cloudSyncState.requireAuth || cloudSyncState.accessToken || cloudSyncState.identityOnlyMode)) {
+                try {
+                    if (cloudSyncState.requireAuth && cloudSyncState.accessToken) {
+                        await fetchCurrentUserRole();
+                        if (!cloudSyncState.currentUserRole) {
+                            setSyncIndicator('error', 'No workspace permission for this email');
+                            applyPermissionMode();
+                            return;
+                        }
                     }
+
+                    await bootstrapFromCloud();
+                    renderAllSections();
+                    applyPermissionMode();
+                } catch (_error) {
+                    setSyncIndicator('error', 'Permission check failed.');
                 }
-
-                await bootstrapFromCloud();
-                renderAllSections();
+            } else if (cloudSyncState.requireAuth) {
+                setSyncIndicator('error', 'Sign in with your email to continue');
                 applyPermissionMode();
-            } catch (_error) {
-                setSyncIndicator('error', 'Permission check failed.');
             }
-        } else if (cloudSyncState.requireAuth) {
-            setSyncIndicator('error', 'Login required for cloud sync');
-            applyPermissionMode();
-        }
-    });
+        });
+    } else {
+        applyAuthSession(null);
+    }
 
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken) {
-        setAuthMessage('Sign in with your approved email to enable cloud data.');
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !cloudSyncState.identityOnlyMode) {
+        setAuthMessage('Sign in with your email to continue.');
     }
 
     updateAuthUi();
@@ -314,7 +390,14 @@ function endSyncRequest() {
 
 async function cloudFetch(path, options = {}) {
     if (cloudSyncState.requireAuth && !cloudSyncState.accessToken) {
-        throw new Error('Login required for cloud sync');
+        if (!cloudSyncState.identityOnlyMode) {
+            throw new Error('Sign in with your email to continue');
+        }
+    }
+
+    const method = String(options.method || 'GET').toUpperCase();
+    if (cloudSyncState.identityOnlyMode && method !== 'GET') {
+        throw new Error('Sign in with your email to continue');
     }
 
     const url = `${cloudSyncState.baseUrl}${path}`;
@@ -338,6 +421,7 @@ async function cloudFetch(path, options = {}) {
 
 function scheduleCloudSave(key, value) {
     if (!cloudSyncState.enabled) return;
+    if (cloudSyncState.identityOnlyMode) return;
     if (cloudSyncState.requireAuth && !cloudSyncState.accessToken) return;
     if (!hasWritePermission()) return;
 
@@ -346,7 +430,7 @@ function scheduleCloudSave(key, value) {
 
     cloudSyncState.flushTimer = setTimeout(() => {
         flushCloudSaves().catch(() => {
-            setSyncIndicator('error', 'Cloud sync failed. Local changes are still saved.');
+            setSyncIndicator('error', 'Save failed. Local changes are still saved.');
         });
     }, 700);
 }
@@ -397,7 +481,7 @@ async function bootstrapFromCloud() {
     cloudSyncState.enabled = Boolean(config.enabled);
 
     if (!cloudSyncState.enabled) {
-        setSyncIndicator('local', 'Local-only mode');
+        setSyncIndicator('local', 'Enter your email to get access');
         return;
     }
 
@@ -409,12 +493,12 @@ async function bootstrapFromCloud() {
     cloudSyncState.useWorkspaceColumn = Boolean(config.useWorkspaceColumn);
 
     if (!cloudSyncState.baseUrl || !cloudSyncState.anonKey) {
-        setSyncIndicator('local', 'Local-only mode (cloud not configured)');
+        setSyncIndicator('error', 'Access service not configured');
         return;
     }
 
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken) {
-        setSyncIndicator('error', 'Login required for cloud sync');
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !cloudSyncState.identityOnlyMode) {
+        setSyncIndicator('error', 'Sign in with your email to continue');
         return;
     }
 
@@ -446,8 +530,8 @@ async function bootstrapFromCloud() {
         setSyncIndicator('synced', 'Cloud data loaded');
     } catch (error) {
         setSyncIndicator('error', cloudSyncState.requireAuth
-            ? 'Cloud denied. Check login email permissions.'
-            : 'Cloud unavailable. Using local data only.');
+            ? 'Access denied. Check your email role.'
+            : 'Service unavailable. Using local data only.');
     }
 }
 
@@ -647,6 +731,10 @@ function getTriggerRows() {
 }
 
 function saveState(key, value) {
+    if (key === 'weeklyDDSTriggersDateState' && !canManageWorkspaceContent()) {
+        return;
+    }
+
     localStorage.setItem(key, JSON.stringify(value));
     scheduleCloudSave(key, value);
 }
@@ -1048,6 +1136,10 @@ function renderTriggerGrid() {
         startDateInput.value = dateState.startDate || '';
         startDateInput.disabled = !canManageTrigger;
         startDateInput.onchange = (event) => {
+            if (!canManageWorkspaceContent()) {
+                event.target.value = dateState.startDate || '';
+                return;
+            }
             dateState.startDate = event.target.value;
             saveState('weeklyDDSTriggersDateState', dateState);
             renderTriggerGrid();
@@ -1429,7 +1521,7 @@ function init() {
     cloudSyncState.useWorkspaceColumn = Boolean(config.useWorkspaceColumn);
 
     return initializeAuth(config).then(async () => {
-        if (cloudSyncState.requireAuth && cloudSyncState.accessToken) {
+        if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !cloudSyncState.identityOnlyMode) {
             await fetchCurrentUserRole();
             if (!cloudSyncState.currentUserRole) {
                 setSyncIndicator('error', 'No workspace permission for this email');
@@ -1447,7 +1539,7 @@ function init() {
             link.addEventListener('click', (event) => {
                 if (link.dataset.locked === 'true') {
                     event.preventDefault();
-                    setAuthMessage('Only admin/editor can open DDS history.', true);
+                    setAuthMessage('Only admin or editor can open DDS history.', true);
                 }
             });
         });
@@ -1468,7 +1560,7 @@ function init() {
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 flushCloudSaves().catch(() => {
-                    setSyncIndicator('error', 'Cloud sync failed. Local changes are still saved.');
+                    setSyncIndicator('error', 'Save failed. Local changes are still saved.');
                 });
             }
         });
@@ -1476,7 +1568,7 @@ function init() {
         window.addEventListener('beforeunload', () => {
             if (cloudSyncState.enabled && cloudSyncState.pendingSaves.size) {
                 flushCloudSaves().catch(() => {
-                    setSyncIndicator('error', 'Cloud sync failed. Local changes are still saved.');
+                    setSyncIndicator('error', 'Save failed. Local changes are still saved.');
                 });
             }
         });

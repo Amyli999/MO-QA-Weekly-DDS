@@ -14,12 +14,12 @@
                 <div class="hero-badge">Workspace Member Access</div>
                 <div id="admin-auth-status" class="sync-status sync-local">Not signed in</div>
                 <div class="auth-controls">
-                    <div class="admin-login-title">Admin Log In</div>
-                    <input id="admin-auth-email" type="email" placeholder="you@company.com" aria-label="Admin login email">
+                    <div class="admin-login-title">Email sign in</div>
+                    <input id="admin-auth-email" type="email" placeholder="you@company.com" aria-label="Email login">
                     <button id="admin-login-btn" type="button">sign in</button>
                     <button id="admin-logout-btn" type="button" class="secondary-btn">Logout</button>
                 </div>
-                <div id="admin-message" class="auth-message"></div>
+                <div id="admin-message" class="auth-message">Sign in with your email to continue.</div>
             </div>
         </header>
 
@@ -34,7 +34,7 @@
             <div class="section-header">
                 <div>
                     <h2>Member Permission</h2>
-                    <p class="admin-note">Only admin email can add/remove members and update roles.</p>
+                    <p class="admin-note">Only admin can add or remove members and update roles.</p>
                 </div>
             </div>
 
@@ -57,7 +57,7 @@
             <div class="section-header">
                 <div>
                     <h2>Workspace Content</h2>
-                    <p class="admin-note">Only admin email can update Reminder, Trigger list, and the default Trigger start date.</p>
+                    <p class="admin-note">Only admin can update Reminder, Trigger list, and the default Trigger start date.</p>
                 </div>
             </div>
 
@@ -79,7 +79,7 @@
         </section>
     </div>
 
-    <script src="../cloud-config.js?v=20260801a"></script>
+    <script src="../cloud-config.js?v=20260802h"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
         const config = window.DDS_CLOUD_CONFIG || {};
@@ -87,7 +87,6 @@
         const workspaceConfigStorageKey = 'weeklyDDSWorkspaceConfigState';
         const triggerDateStorageKey = 'weeklyDDSTriggersDateState';
         const triggerStateStorageKey = 'weeklyDDSTriggersState';
-        const adminLoginEmail = 'li.he.7@pg.com';
         const defaultReminderItems = [
             { key: 'project-kickoff', label: 'Any project kick off or SOS' },
             { key: 'leadership-visit', label: 'Any leadership/external visit in +/- 1 week' },
@@ -134,6 +133,10 @@
 
         function saveLocalMembers(members) {
             localStorage.setItem(localMembersStorageKey, JSON.stringify(members));
+        }
+
+        function clearLocalMembersCache() {
+            localStorage.removeItem(localMembersStorageKey);
         }
 
         function loadLocalJson(key, fallback) {
@@ -229,9 +232,7 @@
             const disabled = !canManage();
             if (warning) {
                 if (!isCloudReady()) {
-                    warning.textContent = disabled
-                        ? 'Local mode: enter li.he.7@pg.com and sign in to enable admin management.'
-                        : '';
+                    warning.textContent = 'Cloud service is required for role-based admin access.';
                 } else if (!state.accessToken) {
                     warning.textContent = 'Please sign in first.';
                 } else if (disabled) {
@@ -444,6 +445,7 @@
                 }
             );
             state.members = Array.isArray(rows) ? rows : [];
+            clearLocalMembersCache();
             renderMembers();
         }
 
@@ -536,7 +538,7 @@
                             saveLocalMembers(members);
                             state.members = members;
                             renderMembers();
-                            setMessage('Member removed in local mode.');
+                            setMessage('Member removed.');
                             return;
                         }
 
@@ -642,33 +644,13 @@
         async function initAdmin() {
             document.getElementById('admin-login-btn')?.addEventListener('click', async () => {
                 if (!isCloudReady()) {
-                    const email = String(document.getElementById('admin-auth-email')?.value || '').trim();
-                    if (!email) {
-                        setMessage('Please enter email first.', true);
-                        return;
-                    }
-                    if (email.toLowerCase() !== adminLoginEmail) {
-                        alert('你不是管理员');
-                        return;
-                    }
-
-                    state.email = email;
-                    state.role = 'admin';
-                    setAuthStatus(`Signed in: ${state.email} (admin local)`, 'sync-synced');
-                    setMessage('Local admin mode enabled.');
-                    applyManageMode();
-                    renderMembers();
+                    setMessage('Cloud service is required for role-based admin access.', true);
                     return;
                 }
 
                 const email = String(document.getElementById('admin-auth-email')?.value || '').trim();
                 if (!email) {
                     setMessage('Please enter email first.', true);
-                    return;
-                }
-
-                if (email.toLowerCase() !== adminLoginEmail) {
-                    alert('你不是管理员');
                     return;
                 }
 
@@ -690,8 +672,8 @@
                 if (!isCloudReady()) {
                     state.email = '';
                     state.role = '';
-                    setAuthStatus('Local mode', 'sync-local');
-                    setMessage('Signed out from local admin mode.');
+                    setAuthStatus('Signed out', 'sync-local');
+                    setMessage('Signed out from admin access.');
                     applyManageMode();
                     renderMembers();
                     return;
@@ -719,8 +701,8 @@
             });
 
             if (!isCloudReady()) {
-                setAuthStatus('Local mode', 'sync-local');
-                setMessage('Local mode: enter li.he.7@pg.com and click sign in to enable admin management.');
+                setAuthStatus('Signed out', 'sync-local');
+                setMessage('Cloud service is required for role-based admin access.', true);
                 state.role = '';
                 await loadMembers();
                 applyManageMode();
@@ -728,7 +710,7 @@
             }
 
             if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-                setAuthStatus('Supabase library missing', 'sync-error');
+                setAuthStatus('Access service missing', 'sync-error');
                 return;
             }
 
