@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CN MO QA Weekly DDS Dashboard</title>
-    <link rel="stylesheet" href="css/style.css?v=20260727l">
+    <link rel="stylesheet" href="css/style.css?v=20260801a">
 </head>
 
 <body>
@@ -21,6 +21,7 @@
                     <div class="auth-controls">
                         <input id="auth-email-input" type="email" placeholder="you@company.com" aria-label="Login email">
                         <button id="auth-login-btn" type="button">Sign In</button>
+                        <button id="auth-logout-btn" type="button" class="secondary-btn">Log Out</button>
                     </div>
                     <div id="auth-message" class="auth-message"></div>
                 </div>
@@ -29,7 +30,7 @@
 
         <nav class="top-nav">
             <a class="active" href="index.html">DDS Dashboard</a>
-            <a href="pages/history.html">DDS history</a>
+            <a id="history-nav-link" href="pages/history.html">DDS history</a>
             <a href="pages/masterplan.html">Master Plan</a>
             <a id="admin-nav-link" href="pages/admin.html">Admin</a>
         </nav>
@@ -48,6 +49,11 @@
                     <div class="module-1-panel">
                         <h3>Reminder</h3>
                         <ul id="reminder-list"></ul>
+                        <div id="reminder-editor-panel" class="reminder-editor-panel" hidden>
+                            <label for="reminder-editor-input">Reminder details (one item per line)</label>
+                            <textarea id="reminder-editor-input" rows="5"></textarea>
+                            <button id="reminder-editor-save-btn" type="button" class="secondary-btn">Save Reminder</button>
+                        </div>
                     </div>
                     <div class="module-1-panel module-1-panel--notes">
                         <h3>Notes</h3>
@@ -60,11 +66,9 @@
                 <div class="section-header">
                     <div>
                         <h2>2. DDS Trigger</h2>
-                        <div class="trigger-access-row">
-                            <button id="add-trigger-row-btn" type="button" class="add-btn" aria-label="Add trigger">+</button>
-                        </div>
                     </div>
                     <div class="section-header-actions">
+                        <button id="add-trigger-row-btn" type="button" class="add-btn" aria-label="Add trigger">+</button>
                         <label class="date-input-label">
                             Start date:
                             <input id="trigger-start-date" type="date">
@@ -142,7 +146,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="cloud-config.js?v=20260801a"></script>
-    <script src="script.js?v=20260801b"></script>
+    <script src="script.js?v=20260801c"></script>
 </body>
 
 </html>

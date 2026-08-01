@@ -76,20 +76,29 @@ function setAuthMessage(message, isError = false) {
 }
 
 function updateAdminNavAccess() {
+    const historyLink = document.getElementById('history-nav-link');
     const adminLink = document.getElementById('admin-nav-link');
-    if (!adminLink) return;
+    const restrictedLinks = [historyLink, adminLink].filter(Boolean);
+    if (!restrictedLinks.length) return;
 
-    const requiresGuard = cloudSyncState.enabled && cloudSyncState.requireAuth;
-    const allowAdmin = !requiresGuard || cloudSyncState.currentUserRole === 'admin';
-
-    if (allowAdmin) {
-        adminLink.classList.remove('nav-disabled');
-        adminLink.dataset.locked = 'false';
-        return;
+    let allowAdminFeatures = false;
+    if (!cloudSyncState.enabled) {
+        allowAdminFeatures = cloudSyncState.currentUserRole === 'admin';
+    } else if (!cloudSyncState.requireAuth) {
+        allowAdminFeatures = true;
+    } else {
+        allowAdminFeatures = cloudSyncState.currentUserRole === 'admin';
     }
 
-    adminLink.classList.add('nav-disabled');
-    adminLink.dataset.locked = 'true';
+    restrictedLinks.forEach((link) => {
+        if (allowAdminFeatures) {
+            link.classList.remove('nav-disabled');
+            link.dataset.locked = 'false';
+        } else {
+            link.classList.add('nav-disabled');
+            link.dataset.locked = 'true';
+        }
+    });
 }
 
 function updateAuthUi() {
@@ -115,9 +124,7 @@ function updateAuthUi() {
         loginButton.disabled = cloudSyncState.enabled && !cloudSyncState.authClient;
     }
     if (authInput) {
-        if (signedIn) {
-            authInput.value = cloudSyncState.currentUserEmail;
-        }
+        authInput.value = signedIn ? cloudSyncState.currentUserEmail : '';
     }
 }
 
@@ -209,6 +216,7 @@ async function initializeAuth(config) {
                 saveLocalAuthSession(email, 'admin');
                 setAuthMessage('Local admin mode enabled.');
                 updateAuthUi();
+                updateAdminNavAccess();
                 applyPermissionMode();
                 renderAllSections();
             });
@@ -222,6 +230,7 @@ async function initializeAuth(config) {
                 clearLocalAuthSession();
                 setAuthMessage('Signed out from local admin mode.');
                 updateAuthUi();
+                updateAdminNavAccess();
                 applyPermissionMode();
                 renderAllSections();
             });
@@ -896,8 +905,54 @@ function renderGeneralNotes() {
     const state = getGeneralState();
     const reminderList = document.getElementById('reminder-list');
     const notesInput = document.getElementById('general-notes-input');
+    const reminderEditorPanel = document.getElementById('reminder-editor-panel');
+    const reminderEditorInput = document.getElementById('reminder-editor-input');
+    const reminderEditorSaveButton = document.getElementById('reminder-editor-save-btn');
 
     reminderList.innerHTML = getReminderItems().map((item) => `<li>${item.label}</li>`).join('');
+
+    const canManageReminder = canManageWorkspaceContent();
+    if (reminderEditorPanel) {
+        reminderEditorPanel.hidden = !canManageReminder;
+    }
+
+    if (reminderEditorInput) {
+        reminderEditorInput.value = getReminderItems().map((item) => item.label).join('\n');
+        reminderEditorInput.disabled = !canManageReminder;
+    }
+
+    if (reminderEditorSaveButton) {
+        reminderEditorSaveButton.disabled = !canManageReminder;
+        if (!reminderEditorSaveButton.dataset.boundReminderEditor) {
+            reminderEditorSaveButton.dataset.boundReminderEditor = 'true';
+            reminderEditorSaveButton.addEventListener('click', () => {
+                if (!canManageWorkspaceContent()) {
+                    setAuthMessage('Only admin can edit reminder details.', true);
+                    return;
+                }
+
+                const nextLines = String(reminderEditorInput?.value || '')
+                    .split(/\r?\n/)
+                    .map((line) => line.trim())
+                    .filter(Boolean);
+
+                if (!nextLines.length) {
+                    setAuthMessage('Reminder details cannot be empty.', true);
+                    return;
+                }
+
+                const workspaceConfig = getWorkspaceConfig();
+                workspaceConfig.reminderItems = nextLines.map((label, index) => ({
+                    key: buildReminderConfigKey(label, index),
+                    label
+                }));
+
+                saveState(WORKSPACE_CONFIG_STORAGE_KEY, workspaceConfig);
+                setAuthMessage('Reminder details saved.');
+                renderGeneralNotes();
+            });
+        }
+    }
 
     const noteValue = typeof state.notes === 'string'
         ? state.notes
@@ -1516,15 +1571,17 @@ function init() {
         document.getElementById('current-week-label').textContent = getWeekDisplayRange(new Date());
 
         const adminLink = document.getElementById('admin-nav-link');
-        if (adminLink && !adminLink.dataset.boundAccessGuard) {
-            adminLink.dataset.boundAccessGuard = 'true';
-            adminLink.addEventListener('click', (event) => {
-                if (adminLink.dataset.locked === 'true') {
+        const historyLink = document.getElementById('history-nav-link');
+        [historyLink, adminLink].filter(Boolean).forEach((link) => {
+            if (link.dataset.boundAccessGuard) return;
+            link.dataset.boundAccessGuard = 'true';
+            link.addEventListener('click', (event) => {
+                if (link.dataset.locked === 'true') {
                     event.preventDefault();
-                    setAuthMessage('need access', true);
+                    setAuthMessage('Only admin can open DDS history and Admin pages.', true);
                 }
             });
-        }
+        });
 
         attachEventHandlers();
         renderAllSections();

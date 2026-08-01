@@ -171,6 +171,15 @@ body {
     background: #0d3a97;
 }
 
+.auth-controls #auth-logout-btn {
+    background: rgba(255, 255, 255, 0.3);
+    color: #fff;
+}
+
+.auth-controls #auth-logout-btn:hover {
+    background: rgba(255, 255, 255, 0.36);
+}
+
 button {
     border: none;
     border-radius: 10px;
@@ -314,6 +323,28 @@ main {
     padding: 0;
     border-radius: 50%;
     font-size: 0.75rem;
+}
+
+.reminder-editor-panel {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.reminder-editor-panel label {
+    font-size: 0.86rem;
+    color: var(--muted);
+}
+
+.reminder-editor-panel textarea {
+    width: 100%;
+    min-height: 108px;
+}
+
+.reminder-editor-panel button {
+    width: fit-content;
+    min-width: 120px;
 }
 
 .table-wrapper {
