@@ -101,6 +101,8 @@
             'Any 3PL vendor change or 3PL QA change?',
             'Any MO related global SOP/Policy plan to change?'
         ];
+        const ENABLE_SUPABASE_SYNC = config.ENABLE_SUPABASE_SYNC === true;
+        const DUAL_WRITE_LOG_PREFIX = '[DDS DualWrite][admin]';
         const state = {
             baseUrl: String(config.baseUrl || '').replace(/\/$/, ''),
             anonKey: String(config.anonKey || ''),
@@ -110,12 +112,55 @@
             email: '',
             role: '',
             members: [],
+            secondaryPendingWrites: [],
             workspaceConfig: {
                 reminderItems: defaultReminderItems.map((item) => ({ ...item })),
                 triggerRows: [...defaultTriggerRows],
                 defaultTriggerStartDate: ''
             }
         };
+
+        function logDualWriteResult(status, context, meta = {}) {
+            const details = {
+                context,
+                workspaceId: state.workspaceId,
+                ...meta
+            };
+            if (status === 'success') {
+                console.log(`${DUAL_WRITE_LOG_PREFIX} success`, details);
+                return;
+            }
+            if (status === 'conflict') {
+                console.warn(`${DUAL_WRITE_LOG_PREFIX} conflict`, details);
+                return;
+            }
+            console.warn(`${DUAL_WRITE_LOG_PREFIX} fail`, details);
+        }
+
+        function classifyCloudWriteFailure(error) {
+            const message = String(error?.message || error || '').toLowerCase();
+            if (message.includes('409') || message.includes('412') || message.includes('conflict') || message.includes('duplicate key')) {
+                return 'conflict';
+            }
+            return 'fail';
+        }
+
+        function canUseSecondaryStorage() {
+            if (!ENABLE_SUPABASE_SYNC) return false;
+            if (!isCloudReady()) return false;
+            if (config.requireAuth && !state.accessToken) return false;
+            return true;
+        }
+
+        function queueSecondaryRollback(operation) {
+            state.secondaryPendingWrites.push({
+                ...operation,
+                queuedAt: new Date().toISOString()
+            });
+            if (state.secondaryPendingWrites.length > 50) {
+                state.secondaryPendingWrites.shift();
+            }
+        }
 
         function isCloudReady() {
             return Boolean(config.enabled && state.baseUrl && state.anonKey);
@@ -299,23 +344,40 @@
         }
 
         async function persistWorkspaceState(key, payload) {
-            if (!isCloudReady()) {
-                saveLocalJson(key, payload);
+            saveLocalJson(key, payload);
+
+            if (!canUseSecondaryStorage()) {
                 return;
             }
 
-            await apiFetch(`/rest/v1/dds_state?on_conflict=state_key`, {
-                method: 'POST',
-                headers: { ...buildHeaders(), Prefer: 'resolution=merge-duplicates,return=minimal' },
-                body: JSON.stringify([
-                    {
-                        state_key: buildStateKey(key),
-                        workspace_id: state.workspaceId,
-                        payload,
-                        updated_at: new Date().toISOString()
-                    }
-                ])
-            });
+            const operation = {
+                type: 'workspace-state',
+                key,
+                payload: JSON.parse(JSON.stringify(payload))
+            };
+
+            try {
+                await apiFetch(`/rest/v1/dds_state?on_conflict=state_key`, {
+                    method: 'POST',
+                    headers: { ...buildHeaders(), Prefer: 'resolution=merge-duplicates,return=minimal' },
+                    body: JSON.stringify([
+                        {
+                            state_key: buildStateKey(key),
+                            workspace_id: state.workspaceId,
+                            payload,
+                            updated_at: new Date().toISOString()
+                        }
+                    ])
+                });
+                logDualWriteResult('success', 'persistWorkspaceState', { key });
+            } catch (error) {
+                queueSecondaryRollback(operation);
+                const status = classifyCloudWriteFailure(error);
+                logDualWriteResult(status, 'persistWorkspaceState', {
+                    key,
+                    reason: error?.message || String(error || '')
+                });
+            }
         }
 
         async function loadWorkspaceConfig() {
@@ -455,27 +517,45 @@
                 return;
             }
 
-            if (!isCloudReady()) {
-                const members = loadLocalMembers();
-                const idx = members.findIndex((m) => String(m.id) === String(id));
-                if (idx >= 0) {
-                    members[idx].role = role;
-                    members[idx].email = email;
-                    saveLocalMembers(members);
-                    state.members = members;
-                    renderMembers();
-                }
+            const members = loadLocalMembers();
+            const idx = members.findIndex((m) => String(m.id) === String(id));
+            if (idx >= 0) {
+                members[idx].role = role;
+                members[idx].email = email;
+                saveLocalMembers(members);
+                state.members = members;
+                renderMembers();
+            }
+
+            if (!canUseSecondaryStorage()) {
                 setMessage('save success');
                 return;
             }
 
-            await apiFetch(`/rest/v1/dds_workspace_members?id=eq.${encodeURIComponent(id)}`, {
-                method: 'PATCH',
-                headers: { ...buildHeaders(), Prefer: 'return=minimal' },
-                body: JSON.stringify({ role, email })
-            });
+            let cloudWriteSucceeded = false;
+            try {
+                await apiFetch(`/rest/v1/dds_workspace_members?id=eq.${encodeURIComponent(id)}`, {
+                    method: 'PATCH',
+                    headers: { ...buildHeaders(), Prefer: 'return=minimal' },
+                    body: JSON.stringify({ role, email })
+                });
+                cloudWriteSucceeded = true;
+                logDualWriteResult('success', 'persistMemberUpdate', { id, email, role });
+            } catch (error) {
+                queueSecondaryRollback({ type: 'member-update', id, email, role });
+                const status = classifyCloudWriteFailure(error);
+                logDualWriteResult(status, 'persistMemberUpdate', {
+                    id,
+                    email,
+                    role,
+                    reason: error?.message || String(error || '')
+                });
+            }
+
             setMessage('save success');
-            await loadMembers();
+            if (cloudWriteSucceeded) {
+                await loadMembers();
+            }
         }
 
         function renderMembers() {
@@ -532,13 +612,14 @@
                     const id = row?.dataset.id;
                     if (!id) return;
 
+                    const localMembers = loadLocalMembers().filter((m) => String(m.id) !== String(id));
+                    saveLocalMembers(localMembers);
+                    state.members = localMembers;
+                    renderMembers();
+                    setMessage('Member removed.');
+
                     try {
-                        if (!isCloudReady()) {
-                            const members = loadLocalMembers().filter((m) => String(m.id) !== String(id));
-                            saveLocalMembers(members);
-                            state.members = members;
-                            renderMembers();
-                            setMessage('Member removed.');
+                        if (!canUseSecondaryStorage()) {
                             return;
                         }
 
@@ -546,10 +627,15 @@
                             method: 'DELETE',
                             headers: { ...buildHeaders(), Prefer: 'return=minimal' }
                         });
-                        setMessage('Member removed.');
+                        logDualWriteResult('success', 'removeMember', { id });
                         await loadMembers();
                     } catch (error) {
-                        setMessage(error.message || 'Remove failed', true);
+                        queueSecondaryRollback({ type: 'member-delete', id });
+                        const status = classifyCloudWriteFailure(error);
+                        logDualWriteResult(status, 'removeMember', {
+                            id,
+                            reason: error?.message || String(error || '')
+                        });
                     }
                 });
             });
@@ -572,33 +658,33 @@
             }
 
             try {
-                if (!isCloudReady()) {
-                    const members = loadLocalMembers();
-                    const existingIndex = members.findIndex((m) => String(m.email || '').toLowerCase() === email);
-                    const payload = {
-                        id: existingIndex >= 0 ? members[existingIndex].id : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                        workspace_id: state.workspaceId,
-                        email,
-                        role,
-                        created_at: existingIndex >= 0 ? members[existingIndex].created_at : new Date().toISOString()
-                    };
+                const members = loadLocalMembers();
+                const existingIndex = members.findIndex((m) => String(m.email || '').toLowerCase() === email);
+                const payload = {
+                    id: existingIndex >= 0 ? members[existingIndex].id : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                    workspace_id: state.workspaceId,
+                    email,
+                    role,
+                    created_at: existingIndex >= 0 ? members[existingIndex].created_at : new Date().toISOString()
+                };
 
-                    if (existingIndex >= 0) {
-                        members[existingIndex] = payload;
-                    } else {
-                        members.push(payload);
-                    }
+                if (existingIndex >= 0) {
+                    members[existingIndex] = payload;
+                } else {
+                    members.push(payload);
+                }
 
-                    saveLocalMembers(members);
-                    state.members = members;
-                    renderMembers();
-                    emailInput.value = '';
-                    setMessage('save success');
+                saveLocalMembers(members);
+                state.members = members;
+                renderMembers();
+                emailInput.value = '';
+                setMessage('save success');
+
+                if (!canUseSecondaryStorage()) {
                     return;
                 }
 
-                if (!state.accessToken) {
-                    setMessage('Please sign in first.', true);
+                if (config.requireAuth && !state.accessToken) {
                     return;
                 }
 
@@ -613,11 +699,18 @@
                         }
                     ])
                 });
+                logDualWriteResult('success', 'addMember', { email, role });
                 setMessage('save success');
                 emailInput.value = '';
                 await loadMembers();
             } catch (error) {
-                setMessage(error.message || 'Add member failed', true);
+                queueSecondaryRollback({ type: 'member-add', email, role });
+                const status = classifyCloudWriteFailure(error);
+                logDualWriteResult(status, 'addMember', {
+                    email,
+                    role,
+                    reason: error?.message || String(error || '')
+                });
             }
         }
 

@@ -117,6 +117,21 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "none"
+		},
+		{
+			"label": "validate-supabase-connection",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\scripts\\validate-supabase-connection.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

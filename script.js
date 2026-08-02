@@ -15,6 +15,7 @@ const DEFAULT_TRIGGER_ROWS = [
 ];
 
 const WORKSPACE_CONFIG_STORAGE_KEY = 'weeklyDDSWorkspaceConfigState';
+const LOCAL_STATE_FRESHNESS_META_KEY = '__dds_local_state_freshness_v1';
 const LOCAL_TO_CLOUD_SYNC_KEYS = [
     'weeklyDDSGeneralState',
     'weeklyDDSTriggersDateState',
@@ -33,6 +34,7 @@ const followupAddCooldownMs = 450;
 
 const cloudSyncState = {
     enabled: false,
+    supabaseSyncEnabled: false,
     baseUrl: '',
     anonKey: '',
     tableName: 'dds_state',
@@ -45,9 +47,236 @@ const cloudSyncState = {
     authClient: null,
     identityOnlyMode: false,
     pendingSaves: new Map(),
+    rollbackSnapshots: [],
     flushTimer: null,
     activeRequests: 0
 };
+
+const DUAL_WRITE_LOG_PREFIX = '[DDS DualWrite]';
+
+function parseIsoTime(value) {
+    const parsed = Date.parse(String(value || ''));
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toFiniteNumber(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+}
+
+function loadLocalFreshnessMetaMap() {
+    try {
+        const raw = localStorage.getItem(LOCAL_STATE_FRESHNESS_META_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_error) {
+        return {};
+    }
+}
+
+function saveLocalFreshnessMetaMap(map) {
+    localStorage.setItem(LOCAL_STATE_FRESHNESS_META_KEY, JSON.stringify(map));
+}
+
+function getLocalFreshnessMeta(key) {
+    const map = loadLocalFreshnessMetaMap();
+    const entry = map?.[key];
+    return entry && typeof entry === 'object' ? entry : null;
+}
+
+function updateLocalFreshnessMeta(key, updates = {}) {
+    const map = loadLocalFreshnessMetaMap();
+    const existing = map?.[key] && typeof map[key] === 'object' ? map[key] : {};
+    const existingVersion = toFiniteNumber(existing.version) || 0;
+    const incomingVersion = toFiniteNumber(updates.version);
+    const nextVersion = incomingVersion !== null ? incomingVersion : existingVersion + 1;
+
+    map[key] = {
+        version: nextVersion,
+        updatedAt: String(updates.updatedAt || new Date().toISOString()),
+        source: String(updates.source || existing.source || 'local')
+    };
+
+    saveLocalFreshnessMetaMap(map);
+    return map[key];
+}
+
+function decideBootstrapOverwrite(localKey, cloudRow) {
+    const localRaw = localStorage.getItem(localKey);
+    if (localRaw === null) {
+        return { overwrite: true, reason: 'no-local-state' };
+    }
+
+    const localMeta = getLocalFreshnessMeta(localKey);
+    const cloudVersion = toFiniteNumber(cloudRow?.version);
+    const cloudUpdatedAt = parseIsoTime(cloudRow?.updated_at);
+
+    if (!localMeta) {
+        return { overwrite: false, reason: 'ambiguous-missing-local-meta', warn: true };
+    }
+
+    const localVersion = toFiniteNumber(localMeta.version);
+    const localUpdatedAt = parseIsoTime(localMeta.updatedAt);
+
+    if (localVersion !== null && cloudVersion !== null && localUpdatedAt !== null && cloudUpdatedAt !== null) {
+        const versionSaysCloudNewer = cloudVersion > localVersion;
+        const timeSaysCloudNewer = cloudUpdatedAt > localUpdatedAt;
+        const versionSaysLocalNewer = cloudVersion < localVersion;
+        const timeSaysLocalNewer = cloudUpdatedAt < localUpdatedAt;
+
+        if ((versionSaysCloudNewer && timeSaysLocalNewer) || (versionSaysLocalNewer && timeSaysCloudNewer)) {
+            return {
+                overwrite: false,
+                reason: 'conflict-version-timestamp-mismatch',
+                warn: true,
+                localVersion,
+                cloudVersion,
+                localUpdatedAt: localMeta.updatedAt,
+                cloudUpdatedAt: cloudRow?.updated_at || ''
+            };
+        }
+    }
+
+    if (localVersion !== null && cloudVersion !== null) {
+        if (cloudVersion > localVersion) {
+            return { overwrite: true, reason: 'cloud-version-newer' };
+        }
+        if (cloudVersion < localVersion) {
+            return {
+                overwrite: false,
+                reason: 'local-version-newer',
+                localVersion,
+                cloudVersion
+            };
+        }
+    }
+
+    if (localUpdatedAt !== null && cloudUpdatedAt !== null) {
+        if (cloudUpdatedAt > localUpdatedAt) {
+            return { overwrite: true, reason: 'cloud-timestamp-newer' };
+        }
+        if (cloudUpdatedAt < localUpdatedAt) {
+            return {
+                overwrite: false,
+                reason: 'local-timestamp-newer',
+                localUpdatedAt: localMeta.updatedAt,
+                cloudUpdatedAt: cloudRow?.updated_at || ''
+            };
+        }
+        return { overwrite: false, reason: 'equal-freshness' };
+    }
+
+    return {
+        overwrite: false,
+        reason: 'ambiguous-insufficient-freshness-data',
+        warn: true,
+        localVersion,
+        cloudVersion,
+        localUpdatedAt: localMeta.updatedAt,
+        cloudUpdatedAt: cloudRow?.updated_at || ''
+    };
+}
+
+async function fetchBootstrapRows(scopedPrefix) {
+    const withVersionQuery = cloudSyncState.useWorkspaceColumn
+        ? `/rest/v1/${cloudSyncState.tableName}?select=state_key,payload,updated_at,version&workspace_id=eq.${encodeURIComponent(cloudSyncState.workspaceId)}`
+        : `/rest/v1/${cloudSyncState.tableName}?select=state_key,payload,updated_at,version&state_key=like.${encodeURIComponent(`${scopedPrefix}*`)}`;
+
+    const withoutVersionQuery = cloudSyncState.useWorkspaceColumn
+        ? `/rest/v1/${cloudSyncState.tableName}?select=state_key,payload,updated_at&workspace_id=eq.${encodeURIComponent(cloudSyncState.workspaceId)}`
+        : `/rest/v1/${cloudSyncState.tableName}?select=state_key,payload,updated_at&state_key=like.${encodeURIComponent(`${scopedPrefix}*`)}`;
+
+    try {
+        return await cloudFetch(
+            withVersionQuery,
+            {
+                method: 'GET',
+                headers: buildCloudHeaders()
+            }
+        );
+    } catch (error) {
+        const message = String(error?.message || error || '').toLowerCase();
+        if (!message.includes('version')) {
+            throw error;
+        }
+        console.warn(`${DUAL_WRITE_LOG_PREFIX} conflict`, {
+            context: 'bootstrapFromCloud',
+            workspaceId: cloudSyncState.workspaceId,
+            reason: 'version-column-unavailable-fallback-to-updated_at'
+        });
+        return cloudFetch(
+            withoutVersionQuery,
+            {
+                method: 'GET',
+                headers: buildCloudHeaders()
+            }
+        );
+    }
+}
+
+function isSupabaseSyncEnabled() {
+    const config = window.DDS_CLOUD_CONFIG || {};
+    return Boolean(config.ENABLE_SUPABASE_SYNC === true);
+}
+
+function classifyCloudWriteFailure(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    if (message.includes('409') || message.includes('412') || message.includes('conflict') || message.includes('duplicate key')) {
+        return 'conflict';
+    }
+    return 'fail';
+}
+
+function logDualWriteResult(status, context, meta = {}) {
+    const details = {
+        context,
+        workspaceId: cloudSyncState.workspaceId,
+        ...meta
+    };
+
+    if (status === 'success') {
+        console.log(`${DUAL_WRITE_LOG_PREFIX} success`, details);
+        return;
+    }
+
+    if (status === 'conflict') {
+        console.warn(`${DUAL_WRITE_LOG_PREFIX} conflict`, details);
+        return;
+    }
+
+    console.warn(`${DUAL_WRITE_LOG_PREFIX} fail`, details);
+}
+
+function snapshotPendingSaves(entries) {
+    return entries.map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]);
+}
+
+function registerRollbackSnapshot(context, entries) {
+    const snapshot = {
+        context,
+        at: new Date().toISOString(),
+        entries: snapshotPendingSaves(entries)
+    };
+    cloudSyncState.rollbackSnapshots.push(snapshot);
+    if (cloudSyncState.rollbackSnapshots.length > 30) {
+        cloudSyncState.rollbackSnapshots.shift();
+    }
+    return snapshot;
+}
+
+function rollbackPendingSavesFromSnapshot(snapshot, error) {
+    if (!snapshot || !Array.isArray(snapshot.entries)) return;
+    snapshot.entries.forEach(([key, value]) => {
+        if (!cloudSyncState.pendingSaves.has(key)) {
+            cloudSyncState.pendingSaves.set(key, value);
+        }
+    });
+    const status = classifyCloudWriteFailure(error);
+    logDualWriteResult(status, `${snapshot.context}:rollback`, {
+        pendingKeys: snapshot.entries.map(([key]) => key),
+        reason: error?.message || String(error || '')
+    });
+}
 
 function setAuthMessage(message, isError = false) {
     const authMessage = document.getElementById('auth-message');
@@ -470,6 +699,7 @@ async function cloudFetch(path, options = {}) {
 
 function scheduleCloudSave(key, value) {
     if (!cloudSyncState.enabled) return;
+    if (!cloudSyncState.supabaseSyncEnabled) return;
     if (cloudSyncState.identityOnlyMode) return;
     if (cloudSyncState.requireAuth && !cloudSyncState.accessToken) return;
     if (!hasWritePermission()) return;
@@ -490,6 +720,11 @@ async function flushCloudSaves() {
         return;
     }
 
+    if (!cloudSyncState.supabaseSyncEnabled) {
+        cloudSyncState.flushTimer = null;
+        return;
+    }
+
     const pendingEntries = Array.from(cloudSyncState.pendingSaves.entries());
     const payloadRows = pendingEntries.map(([key, value]) => {
         const row = {
@@ -506,6 +741,8 @@ async function flushCloudSaves() {
     cloudSyncState.pendingSaves.clear();
     cloudSyncState.flushTimer = null;
 
+    const rollbackSnapshot = registerRollbackSnapshot('flushCloudSaves', pendingEntries);
+
     try {
         await cloudFetch(
             `/rest/v1/${cloudSyncState.tableName}?on_conflict=state_key`,
@@ -518,13 +755,17 @@ async function flushCloudSaves() {
                 body: JSON.stringify(payloadRows)
             }
         );
-    } catch (error) {
-        pendingEntries.forEach(([key, value]) => {
-            if (!cloudSyncState.pendingSaves.has(key)) {
-                cloudSyncState.pendingSaves.set(key, value);
-            }
+        logDualWriteResult('success', 'flushCloudSaves', {
+            keys: pendingEntries.map(([key]) => key),
+            rowCount: payloadRows.length
         });
-        throw error;
+    } catch (error) {
+        rollbackPendingSavesFromSnapshot(rollbackSnapshot, error);
+        const status = classifyCloudWriteFailure(error);
+        logDualWriteResult(status, 'flushCloudSaves', {
+            keys: pendingEntries.map(([key]) => key),
+            reason: error?.message || String(error || '')
+        });
     }
 }
 
@@ -565,6 +806,14 @@ function getLocalCloudSyncPayloadRows() {
 async function syncLocalDataToCloud() {
     if (!cloudSyncState.enabled) {
         setAuthMessage('Cloud sync is not enabled for this workspace.', true);
+        return;
+    }
+
+    if (!cloudSyncState.supabaseSyncEnabled) {
+        setAuthMessage('Supabase sync is disabled by feature flag.');
+        logDualWriteResult('fail', 'syncLocalDataToCloud', {
+            reason: 'ENABLE_SUPABASE_SYNC is false'
+        });
         return;
     }
 
@@ -614,8 +863,18 @@ async function syncLocalDataToCloud() {
 
         if (!response.ok) {
             const errorText = await response.text();
+            const status = response.status === 409 || response.status === 412 ? 'conflict' : 'fail';
+            logDualWriteResult(status, 'syncLocalDataToCloud', {
+                rowCount: payloadRows.length,
+                statusCode: response.status,
+                reason: errorText
+            });
             throw new Error(`Sync failed: ${response.status} ${errorText}`);
         }
+
+        logDualWriteResult('success', 'syncLocalDataToCloud', {
+            rowCount: payloadRows.length
+        });
 
         await bootstrapFromCloud();
         renderAllSections();
@@ -649,6 +908,7 @@ async function bootstrapFromCloud() {
     cloudSyncState.workspaceId = String(config.workspaceId || cloudSyncState.workspaceId);
     cloudSyncState.requireAuth = Boolean(config.requireAuth);
     cloudSyncState.useWorkspaceColumn = Boolean(config.useWorkspaceColumn);
+    cloudSyncState.supabaseSyncEnabled = isSupabaseSyncEnabled();
 
     if (!cloudSyncState.baseUrl || !cloudSyncState.anonKey) {
         setSyncIndicator('error', 'Access service not configured');
@@ -663,17 +923,7 @@ async function bootstrapFromCloud() {
     try {
         setSyncIndicator('syncing', 'Loading cloud data...');
         const scopedPrefix = `${cloudSyncState.workspaceId}:`;
-        const query = cloudSyncState.useWorkspaceColumn
-            ? `/rest/v1/${cloudSyncState.tableName}?select=state_key,payload&workspace_id=eq.${encodeURIComponent(cloudSyncState.workspaceId)}`
-            : `/rest/v1/${cloudSyncState.tableName}?select=state_key,payload&state_key=like.${encodeURIComponent(`${scopedPrefix}*`)}`;
-
-        const rows = await cloudFetch(
-            query,
-            {
-                method: 'GET',
-                headers: buildCloudHeaders()
-            }
-        );
+        const rows = await fetchBootstrapRows(scopedPrefix);
 
         if (Array.isArray(rows)) {
             rows.forEach((row) => {
@@ -681,7 +931,30 @@ async function bootstrapFromCloud() {
                 if (!row.state_key.startsWith(scopedPrefix)) return;
 
                 const localKey = row.state_key.slice(scopedPrefix.length);
+                const decision = decideBootstrapOverwrite(localKey, row);
+
+                if (!decision.overwrite) {
+                    if (decision.warn) {
+                        console.warn(`${DUAL_WRITE_LOG_PREFIX} conflict`, {
+                            context: 'bootstrapFromCloud',
+                            key: localKey,
+                            workspaceId: cloudSyncState.workspaceId,
+                            reason: decision.reason,
+                            localVersion: decision.localVersion,
+                            cloudVersion: decision.cloudVersion,
+                            localUpdatedAt: decision.localUpdatedAt,
+                            cloudUpdatedAt: decision.cloudUpdatedAt
+                        });
+                    }
+                    return;
+                }
+
                 localStorage.setItem(localKey, JSON.stringify(row.payload));
+                updateLocalFreshnessMeta(localKey, {
+                    version: toFiniteNumber(row.version),
+                    updatedAt: String(row.updated_at || new Date().toISOString()),
+                    source: 'cloud'
+                });
             });
         }
 
@@ -894,6 +1167,7 @@ function saveState(key, value) {
     }
 
     localStorage.setItem(key, JSON.stringify(value));
+    updateLocalFreshnessMeta(key, { source: 'local' });
     scheduleCloudSave(key, value);
 }
 

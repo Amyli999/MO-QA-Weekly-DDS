@@ -111,9 +111,145 @@
     <script src="../cloud-config.js?v=20260802i"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
+        const historyConfig = window.DDS_CLOUD_CONFIG || {};
+        const ENABLE_SUPABASE_SYNC = historyConfig.ENABLE_SUPABASE_SYNC === true;
+        const DUAL_WRITE_LOG_PREFIX = '[DDS DualWrite][history]';
+        const LOCAL_STATE_FRESHNESS_META_KEY = '__dds_local_state_freshness_v1';
         const historyAdminState = {
-            canDelete: false
+            canDelete: false,
+            secondaryPendingWrites: []
         };
+
+        function parseIsoTime(value) {
+            const parsed = Date.parse(String(value || ''));
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        function toFiniteNumber(value) {
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function loadLocalFreshnessMetaMap() {
+            try {
+                const raw = localStorage.getItem(LOCAL_STATE_FRESHNESS_META_KEY);
+                const parsed = raw ? JSON.parse(raw) : {};
+                return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch (_error) {
+                return {};
+            }
+        }
+
+        function saveLocalFreshnessMetaMap(map) {
+            localStorage.setItem(LOCAL_STATE_FRESHNESS_META_KEY, JSON.stringify(map));
+        }
+
+        function getLocalFreshnessMeta(key) {
+            const map = loadLocalFreshnessMetaMap();
+            const entry = map?.[key];
+            return entry && typeof entry === 'object' ? entry : null;
+        }
+
+        function updateLocalFreshnessMeta(key, updates = {}) {
+            const map = loadLocalFreshnessMetaMap();
+            const existing = map?.[key] && typeof map[key] === 'object' ? map[key] : {};
+            const existingVersion = toFiniteNumber(existing.version) || 0;
+            const incomingVersion = toFiniteNumber(updates.version);
+            const nextVersion = incomingVersion !== null ? incomingVersion : existingVersion + 1;
+
+            map[key] = {
+                version: nextVersion,
+                updatedAt: String(updates.updatedAt || new Date().toISOString()),
+                source: String(updates.source || existing.source || 'local')
+            };
+
+            saveLocalFreshnessMetaMap(map);
+            return map[key];
+        }
+
+        function decideBootstrapOverwrite(key, cloudRow) {
+            const localRaw = localStorage.getItem(key);
+            if (localRaw === null) {
+                return { overwrite: true, reason: 'no-local-state' };
+            }
+
+            const localMeta = getLocalFreshnessMeta(key);
+            if (!localMeta) {
+                return { overwrite: false, reason: 'ambiguous-missing-local-meta', warn: true };
+            }
+
+            const localVersion = toFiniteNumber(localMeta.version);
+            const cloudVersion = toFiniteNumber(cloudRow?.version);
+            const localUpdatedAt = parseIsoTime(localMeta.updatedAt);
+            const cloudUpdatedAt = parseIsoTime(cloudRow?.updated_at);
+
+            if (localVersion !== null && cloudVersion !== null) {
+                if (cloudVersion > localVersion) {
+                    return { overwrite: true, reason: 'cloud-version-newer' };
+                }
+                if (cloudVersion < localVersion) {
+                    return { overwrite: false, reason: 'local-version-newer' };
+                }
+            }
+
+            if (localUpdatedAt !== null && cloudUpdatedAt !== null) {
+                if (cloudUpdatedAt > localUpdatedAt) {
+                    return { overwrite: true, reason: 'cloud-timestamp-newer' };
+                }
+                if (cloudUpdatedAt < localUpdatedAt) {
+                    return { overwrite: false, reason: 'local-timestamp-newer' };
+                }
+                return { overwrite: false, reason: 'equal-freshness' };
+            }
+
+            return {
+                overwrite: false,
+                reason: 'ambiguous-insufficient-freshness-data',
+                warn: true,
+                localVersion,
+                cloudVersion,
+                localUpdatedAt: localMeta.updatedAt,
+                cloudUpdatedAt: cloudRow?.updated_at || ''
+            };
+        }
+
+        function logDualWriteResult(status, context, meta = {}) {
+            const details = {
+                context,
+                workspaceId: String(historyConfig.workspaceId || 'cn-mo-qa-default'),
+                ...meta
+            };
+
+            if (status === 'success') {
+                console.log(`${DUAL_WRITE_LOG_PREFIX} success`, details);
+                return;
+            }
+
+            if (status === 'conflict') {
+                console.warn(`${DUAL_WRITE_LOG_PREFIX} conflict`, details);
+                return;
+            }
+
+            console.warn(`${DUAL_WRITE_LOG_PREFIX} fail`, details);
+        }
+
+        function classifyCloudWriteFailure(error) {
+            const message = String(error?.message || error || '').toLowerCase();
+            if (message.includes('409') || message.includes('412') || message.includes('conflict') || message.includes('duplicate key')) {
+                return 'conflict';
+            }
+            return 'fail';
+        }
+
+        function queueSecondaryRollback(operation) {
+            historyAdminState.secondaryPendingWrites.push({
+                ...operation,
+                queuedAt: new Date().toISOString()
+            });
+            if (historyAdminState.secondaryPendingWrites.length > 50) {
+                historyAdminState.secondaryPendingWrites.shift();
+            }
+        }
 
         function loadState(key, fallback) {
             try {
@@ -126,6 +262,86 @@
 
         function saveState(key, value) {
             localStorage.setItem(key, JSON.stringify(value));
+            updateLocalFreshnessMeta(key, { source: 'local' });
+            persistStateToCloudSecondary(key, value).catch((_error) => null);
+        }
+
+        function canUseSecondaryStorage() {
+            if (!ENABLE_SUPABASE_SYNC) return false;
+            if (!historyConfig.enabled || !historyConfig.baseUrl || !historyConfig.anonKey) return false;
+            if (!window.supabase || typeof window.supabase.createClient !== 'function') return false;
+            return true;
+        }
+
+        async function buildSecondaryWriteAuth() {
+            const authClient = window.supabase.createClient(String(historyConfig.baseUrl).replace(/\/$/, ''), historyConfig.anonKey, {
+                auth: {
+                    persistSession: true,
+                    autoRefreshToken: true,
+                    detectSessionInUrl: true
+                }
+            });
+            const { data: sessionData } = await authClient.auth.getSession();
+            const accessToken = sessionData?.session?.access_token || '';
+            if (historyConfig.requireAuth && !accessToken) {
+                return { allowed: false, accessToken: '' };
+            }
+            return { allowed: true, accessToken };
+        }
+
+        async function persistStateToCloudSecondary(key, value) {
+            if (!canUseSecondaryStorage()) {
+                return;
+            }
+
+            const auth = await buildSecondaryWriteAuth();
+            if (!auth.allowed) {
+                return;
+            }
+
+            const workspaceId = String(historyConfig.workspaceId || 'cn-mo-qa-default');
+            const row = {
+                state_key: `${workspaceId}:${key}`,
+                payload: value,
+                updated_at: new Date().toISOString()
+            };
+            if (historyConfig.useWorkspaceColumn) {
+                row.workspace_id = workspaceId;
+            }
+
+            try {
+                const response = await fetch(`${String(historyConfig.baseUrl).replace(/\/$/, '')}/rest/v1/${historyConfig.tableName || 'dds_state'}?on_conflict=state_key`, {
+                    method: 'POST',
+                    headers: {
+                        apikey: historyConfig.anonKey,
+                        Authorization: `Bearer ${auth.accessToken || historyConfig.anonKey}`,
+                        'Content-Type': 'application/json',
+                        Prefer: 'resolution=merge-duplicates,return=minimal'
+                    },
+                    body: JSON.stringify([row])
+                });
+
+                if (!response.ok) {
+                    const bodyText = await response.text();
+                    const failure = new Error(`Cloud write failed: ${response.status} ${bodyText}`);
+                    queueSecondaryRollback({ key, payload: JSON.parse(JSON.stringify(value)) });
+                    const status = response.status === 409 || response.status === 412 ? 'conflict' : 'fail';
+                    logDualWriteResult(status, 'saveState', {
+                        key,
+                        reason: failure.message
+                    });
+                    return;
+                }
+
+                logDualWriteResult('success', 'saveState', { key });
+            } catch (error) {
+                queueSecondaryRollback({ key, payload: JSON.parse(JSON.stringify(value)) });
+                const status = classifyCloudWriteFailure(error);
+                logDualWriteResult(status, 'saveState', {
+                    key,
+                    reason: error?.message || String(error || '')
+                });
+            }
         }
 
         function createCell(text) {
@@ -240,11 +456,14 @@
 
             const workspaceId = String(config.workspaceId || 'cn-mo-qa-default');
             const scopedKey = `${workspaceId}:weeklyDDSHistoryArchive`;
-            const url = config.useWorkspaceColumn
-                ? `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?workspace_id=eq.${encodeURIComponent(workspaceId)}&state_key=eq.${encodeURIComponent(scopedKey)}&select=payload`
-                : `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?state_key=eq.${encodeURIComponent(scopedKey)}&select=payload`;
+            const withVersionUrl = config.useWorkspaceColumn
+                ? `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?workspace_id=eq.${encodeURIComponent(workspaceId)}&state_key=eq.${encodeURIComponent(scopedKey)}&select=payload,updated_at,version`
+                : `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?state_key=eq.${encodeURIComponent(scopedKey)}&select=payload,updated_at,version`;
+            const fallbackUrl = config.useWorkspaceColumn
+                ? `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?workspace_id=eq.${encodeURIComponent(workspaceId)}&state_key=eq.${encodeURIComponent(scopedKey)}&select=payload,updated_at`
+                : `${String(config.baseUrl).replace(/\/$/, '')}/rest/v1/${config.tableName || 'dds_state'}?state_key=eq.${encodeURIComponent(scopedKey)}&select=payload,updated_at`;
 
-            const response = await fetch(url, {
+            let response = await fetch(withVersionUrl, {
                 method: 'GET',
                 headers: {
                     apikey: config.anonKey,
@@ -253,7 +472,27 @@
             });
 
             if (!response.ok) {
-                return;
+                const errorText = await response.text();
+                if (!String(errorText || '').toLowerCase().includes('version')) {
+                    return;
+                }
+
+                logDualWriteResult('conflict', 'bootstrapHistoryArchiveFromCloud', {
+                    key: 'weeklyDDSHistoryArchive',
+                    reason: 'version-column-unavailable-fallback-to-updated_at'
+                });
+
+                response = await fetch(fallbackUrl, {
+                    method: 'GET',
+                    headers: {
+                        apikey: config.anonKey,
+                        Authorization: `Bearer ${accessToken || config.anonKey}`
+                    }
+                });
+
+                if (!response.ok) {
+                    return;
+                }
             }
 
             const rows = await response.json();
@@ -261,7 +500,28 @@
                 return;
             }
 
-            localStorage.setItem('weeklyDDSHistoryArchive', JSON.stringify(rows[0].payload));
+            const row = rows[0];
+            const decision = decideBootstrapOverwrite('weeklyDDSHistoryArchive', row);
+            if (!decision.overwrite) {
+                if (decision.warn) {
+                    logDualWriteResult('conflict', 'bootstrapHistoryArchiveFromCloud', {
+                        key: 'weeklyDDSHistoryArchive',
+                        reason: decision.reason,
+                        localVersion: decision.localVersion,
+                        cloudVersion: decision.cloudVersion,
+                        localUpdatedAt: decision.localUpdatedAt,
+                        cloudUpdatedAt: decision.cloudUpdatedAt
+                    });
+                }
+                return;
+            }
+
+            localStorage.setItem('weeklyDDSHistoryArchive', JSON.stringify(row.payload));
+            updateLocalFreshnessMeta('weeklyDDSHistoryArchive', {
+                version: toFiniteNumber(row.version),
+                updatedAt: String(row.updated_at || new Date().toISOString()),
+                source: 'cloud'
+            });
         }
 
         function renderHistoryArchive() {
