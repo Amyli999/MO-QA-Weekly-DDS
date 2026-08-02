@@ -53,6 +53,24 @@ const cloudSyncState = {
 };
 
 const DUAL_WRITE_LOG_PREFIX = '[DDS DualWrite]';
+const runtimeStateCache = new Map();
+
+function isMobileAuthDevice() {
+    if (typeof navigator === 'undefined') {
+        return false;
+    }
+
+    const ua = String(navigator.userAgent || '');
+    if (/Android|iPhone|iPad|iPod/i.test(ua)) {
+        return true;
+    }
+
+    return Boolean(navigator.userAgentData && navigator.userAgentData.mobile);
+}
+
+function getMobileAuthRedirectUrl() {
+    return new URL('auth/callback.html', window.location.href).toString();
+}
 
 function parseIsoTime(value) {
     const parsed = Date.parse(String(value || ''));
@@ -66,8 +84,8 @@ function toFiniteNumber(value) {
 
 function loadLocalFreshnessMetaMap() {
     try {
-        const raw = localStorage.getItem(LOCAL_STATE_FRESHNESS_META_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
+        const raw = window.DDSStorageSync?.readLocalCache(LOCAL_STATE_FRESHNESS_META_KEY, null);
+        const parsed = raw && typeof raw === 'object' ? raw : (raw ? JSON.parse(raw) : {});
         return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (_error) {
         return {};
@@ -75,6 +93,10 @@ function loadLocalFreshnessMetaMap() {
 }
 
 function saveLocalFreshnessMetaMap(map) {
+    if (window.DDSStorageSync) {
+        window.DDSStorageSync.writeLocalCache(LOCAL_STATE_FRESHNESS_META_KEY, map);
+        return;
+    }
     localStorage.setItem(LOCAL_STATE_FRESHNESS_META_KEY, JSON.stringify(map));
 }
 
@@ -101,8 +123,70 @@ function updateLocalFreshnessMeta(key, updates = {}) {
     return map[key];
 }
 
+function setRuntimeState(key, value) {
+    runtimeStateCache.set(String(key), JSON.parse(JSON.stringify(value)));
+    if (String(key) === 'weeklyDDSGeneralState') {
+        window.weeklyDDSGeneralState = JSON.parse(JSON.stringify(value));
+        const diag = ensureRuntimeDiagStore();
+        diag.lastGeneralStateSource = 'runtime memory (state)';
+        if (!diag.firstTest999Appearance && JSON.stringify(value).includes('TEST999')) {
+            diag.firstTest999Appearance = {
+                tag: 'setRuntimeState',
+                location: 'runtime memory (state)',
+                value: JSON.parse(JSON.stringify(value))
+            };
+        }
+    }
+}
+
+function getRuntimeState(key) {
+    return runtimeStateCache.has(String(key)) ? JSON.parse(JSON.stringify(runtimeStateCache.get(String(key)))) : null;
+}
+
+function logGeneralStateDiagnostic(stage, details = {}) {
+    console.log('[DDS Diagnostic]', stage, details);
+}
+
+function ensureRuntimeDiagStore() {
+    if (!window.__ddsRuntimeDiag || typeof window.__ddsRuntimeDiag !== 'object') {
+        window.__ddsRuntimeDiag = {};
+    }
+    return window.__ddsRuntimeDiag;
+}
+
+function captureRuntimeSnapshot(tag) {
+    const diag = ensureRuntimeDiagStore();
+    const stateFromLoadState = loadState('weeklyDDSGeneralState', { weekKey: '', notes: {} });
+    const requestedNotesElement = document.getElementById('generalNotes');
+    const actualNotesElement = document.getElementById('general-notes-input');
+    const actualNotesValue = actualNotesElement ? String(actualNotesElement.value || '') : '';
+
+    if (!diag.firstTest999Appearance && actualNotesValue.includes('TEST999')) {
+        diag.firstTest999Appearance = {
+            tag,
+            location: 'textarea#general-notes-input',
+            value: actualNotesValue
+        };
+    }
+
+    console.log('[DDS DIAG] JSON.stringify(window.weeklyDDSGeneralState) =', JSON.stringify(window.weeklyDDSGeneralState));
+    console.log('[DDS DIAG] JSON.stringify(loadState(\'weeklyDDSGeneralState\')) =', JSON.stringify(stateFromLoadState));
+    console.log('[DDS DIAG] Supabase record returned by loadFromSupabase(\'weeklyDDSGeneralState\') =', JSON.stringify(diag.supabaseGeneralRecord || null));
+    console.log('[DDS DIAG] document.getElementById(\'generalNotes\').value =', requestedNotesElement ? requestedNotesElement.value : null);
+    console.log('[DDS DIAG] Current weekKey =', getWeekKey(new Date()));
+    console.log('[DDS DIAG] Current user identity =', JSON.stringify({
+        email: cloudSyncState.currentUserEmail || '',
+        role: cloudSyncState.currentUserRole || '',
+        identityOnlyMode: Boolean(cloudSyncState.identityOnlyMode)
+    }));
+    console.log('[DDS DIAG] Current conflict resolution winner =', JSON.stringify(diag.lastConflictResolutionWinner || null));
+    console.log('[DDS DIAG] DESKTOP CURRENT NOTES VALUE =', actualNotesValue);
+}
+
 function decideBootstrapOverwrite(localKey, cloudRow) {
-    const localRaw = localStorage.getItem(localKey);
+    const localRaw = window.DDSStorageSync
+        ? window.DDSStorageSync.readLocalCache(localKey, null)
+        : localStorage.getItem(localKey);
     if (localRaw === null) {
         return { overwrite: true, reason: 'no-local-state' };
     }
@@ -432,8 +516,64 @@ function applyAuthSession(session) {
     cloudSyncState.currentUserEmail = session?.user?.email || '';
     cloudSyncState.currentUserRole = '';
     cloudSyncState.identityOnlyMode = false;
+    if (cloudSyncState.accessToken) {
+        console.log('[DDS] Access token acquired');
+    }
     updateAuthUi();
     updateAdminNavAccess();
+}
+
+function isLocalhostMode() {
+    const host = String(window.location.hostname || '').toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1';
+}
+
+function showWaitingForSessionState() {
+    console.log('[DDS] Waiting for session');
+    setSyncIndicator('local', 'Waiting for login');
+    setAuthMessage('Sign in with your email to load DDS data.');
+
+    const banner = document.getElementById('permission-banner');
+    if (banner) {
+        banner.textContent = 'Waiting for sign in before loading dashboard data.';
+    }
+
+    applyPermissionMode();
+}
+
+async function runAuthenticatedBootstrap() {
+    const allowLocalIdentity = isLocalhostMode() && cloudSyncState.identityOnlyMode && Boolean(cloudSyncState.currentUserRole);
+    const mobileAuthFlow = !allowLocalIdentity && isMobileAuthDevice() && Boolean(cloudSyncState.accessToken);
+
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !allowLocalIdentity) {
+        showWaitingForSessionState();
+        return false;
+    }
+
+    if (cloudSyncState.requireAuth && cloudSyncState.accessToken) {
+        await fetchCurrentUserRole();
+        if (!cloudSyncState.currentUserRole) {
+            setSyncIndicator('error', 'No workspace permission for this email');
+            applyPermissionMode();
+            return false;
+        }
+    }
+
+    console.log(allowLocalIdentity ? '[DDS] Local bootstrap started' : mobileAuthFlow ? '[DDS] Mobile bootstrap started' : '[DDS] Starting cloud bootstrap');
+    await bootstrapFromCloud();
+    console.log('[DDS DIAG] weeklyDDSGeneralState after bootstrapFromCloud()', loadState('weeklyDDSGeneralState', { weekKey: '', notes: {} }));
+    console.log(allowLocalIdentity ? '[DDS] Local bootstrap completed' : mobileAuthFlow ? '[DDS] Mobile bootstrap completed' : '[DDS] Cloud bootstrap complete');
+
+    const banner = document.getElementById('permission-banner');
+    if (banner) {
+        banner.textContent = '';
+    }
+
+    renderAllSections();
+    applyPermissionMode();
+    updateAdminNavAccess();
+    captureRuntimeSnapshot('after runAuthenticatedBootstrap');
+    return true;
 }
 
 async function fetchCurrentUserRole() {
@@ -484,9 +624,15 @@ async function initializeAuth(config) {
 
     try {
         if (authCode) {
+            if (isMobileAuthDevice()) {
+                console.log('[DDS] Mobile callback detected');
+            }
             const { error } = await cloudSyncState.authClient.auth.exchangeCodeForSession(authCode);
             if (error) throw error;
         } else if (tokenHash && verifyType) {
+            if (isMobileAuthDevice()) {
+                console.log('[DDS] Mobile callback detected');
+            }
             const { error } = await cloudSyncState.authClient.auth.verifyOtp({
                 token_hash: tokenHash,
                 type: verifyType
@@ -517,25 +663,28 @@ async function initializeAuth(config) {
                 return;
             }
 
-            const role = resolveMemberRoleForEmail(email);
-            if (role) {
-                activateIdentityOnlySession(email, role);
-                window.alert(`${email} is ${role}.`);
-                setAuthMessage(`Identity verified: ${email} (${role})`);
-                setSyncIndicator('synced', 'Identity verified');
-                try {
-                    await bootstrapFromCloud();
-                    renderAllSections();
-                    applyPermissionMode();
-                } catch (error) {
-                    setAuthMessage(`Login warning: ${error.message || error}`, true);
+            if (isLocalhostMode()) {
+                console.log('[DDS] Localhost mode');
+                const role = resolveMemberRoleForEmail(email);
+                if (role) {
+                    activateIdentityOnlySession(email, role);
+                    console.log('[DDS] Local identity verified');
+                    setAuthMessage(`Identity verified: ${email} (${role})`);
+                    setSyncIndicator('synced', 'Identity verified');
+                    try {
+                        await runAuthenticatedBootstrap();
+                    } catch (error) {
+                        setAuthMessage(`Login warning: ${error.message || error}`, true);
+                    }
+                    return;
                 }
-                return;
             }
 
             try {
                 setAuthMessage('Sending login link...');
-                const redirectTo = `${window.location.origin}${window.location.pathname}`;
+                const redirectTo = isMobileAuthDevice()
+                    ? getMobileAuthRedirectUrl()
+                    : `${window.location.origin}${window.location.pathname}`;
                 const { error } = await cloudSyncState.authClient.auth.signInWithOtp({
                     email,
                     options: { emailRedirectTo: redirectTo }
@@ -570,37 +719,54 @@ async function initializeAuth(config) {
     if (cloudSyncState.authClient) {
         const { data: sessionData } = await cloudSyncState.authClient.auth.getSession();
         applyAuthSession(sessionData?.session || null);
+        if (sessionData?.session?.access_token) {
+            if (isMobileAuthDevice()) {
+                console.log('[DDS] Mobile session restored');
+                console.log('[DDS] Mobile access token acquired');
+            }
+            console.log('[DDS] Session restored');
+        } else if (cloudSyncState.requireAuth && !isLocalhostMode()) {
+            console.log('[DDS] Session missing');
+        }
 
         cloudSyncState.authClient.auth.onAuthStateChange(async (_event, session) => {
             applyAuthSession(session || null);
-            if (cloudSyncState.enabled && (!cloudSyncState.requireAuth || cloudSyncState.accessToken || cloudSyncState.identityOnlyMode)) {
-                try {
-                    if (cloudSyncState.requireAuth && cloudSyncState.accessToken) {
-                        await fetchCurrentUserRole();
-                        if (!cloudSyncState.currentUserRole) {
-                            setSyncIndicator('error', 'No workspace permission for this email');
-                            applyPermissionMode();
-                            return;
-                        }
-                    }
+            if (session?.access_token) {
+                console.log('[DDS] Session restored');
+            } else if (cloudSyncState.requireAuth && !isLocalhostMode()) {
+                console.log('[DDS] Session missing');
+            }
 
-                    await bootstrapFromCloud();
-                    renderAllSections();
-                    applyPermissionMode();
+            if (cloudSyncState.enabled && (!cloudSyncState.requireAuth || cloudSyncState.accessToken)) {
+                try {
+                    await runAuthenticatedBootstrap();
                 } catch (_error) {
                     setSyncIndicator('error', 'Permission check failed.');
                 }
             } else if (cloudSyncState.requireAuth) {
-                setSyncIndicator('error', 'Sign in with your email to continue');
-                applyPermissionMode();
+                if (isLocalhostMode()) {
+                    console.log('[DDS] Localhost mode');
+                    setSyncIndicator('local', 'Use memberAccess email for localhost login');
+                    setAuthMessage('Localhost mode: use a memberAccess email to verify identity.');
+                    applyPermissionMode();
+                } else {
+                    showWaitingForSessionState();
+                }
             }
         });
     } else {
         applyAuthSession(null);
     }
 
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !cloudSyncState.identityOnlyMode) {
-        setAuthMessage('Sign in with your email to continue.');
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken) {
+        if (isLocalhostMode()) {
+            console.log('[DDS] Localhost mode');
+            setSyncIndicator('local', 'Use memberAccess email for localhost login');
+            setAuthMessage('Localhost mode: use a memberAccess email to verify identity.');
+            applyPermissionMode();
+        } else {
+            showWaitingForSessionState();
+        }
     }
 
     const syncButton = document.getElementById('sync-local-to-cloud-btn');
@@ -667,16 +833,11 @@ function endSyncRequest() {
 }
 
 async function cloudFetch(path, options = {}) {
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken) {
-        if (!cloudSyncState.identityOnlyMode) {
-            throw new Error('Sign in with your email to continue');
-        }
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !(isLocalhostMode() && cloudSyncState.identityOnlyMode)) {
+        throw new Error('Sign in with your email to continue');
     }
 
     const method = String(options.method || 'GET').toUpperCase();
-    if (cloudSyncState.identityOnlyMode && method !== 'GET') {
-        throw new Error('Sign in with your email to continue');
-    }
 
     const url = `${cloudSyncState.baseUrl}${path}`;
     startSyncRequest();
@@ -777,13 +938,8 @@ function getLocalCloudSyncPayloadRows() {
             return;
         }
 
-        const rawValue = localStorage.getItem(key);
-        if (!rawValue) return;
-
-        let payload;
-        try {
-            payload = JSON.parse(rawValue);
-        } catch (_error) {
+        const payload = getRuntimeState(key) ?? (window.DDSStorageSync?.readLocalCache(key, null) ?? null);
+        if (payload === null || payload === undefined) {
             return;
         }
 
@@ -915,48 +1071,61 @@ async function bootstrapFromCloud() {
         return;
     }
 
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !cloudSyncState.identityOnlyMode) {
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !(isLocalhostMode() && cloudSyncState.identityOnlyMode)) {
         setSyncIndicator('error', 'Sign in with your email to continue');
         return;
     }
 
     try {
-        setSyncIndicator('syncing', 'Loading cloud data...');
-        const scopedPrefix = `${cloudSyncState.workspaceId}:`;
-        const rows = await fetchBootstrapRows(scopedPrefix);
+        setSyncIndicator('syncing', 'Loading from Supabase...');
+        console.log('[DDS] Loading from Supabase');
 
-        if (Array.isArray(rows)) {
-            rows.forEach((row) => {
-                if (!row || typeof row.state_key !== 'string') return;
-                if (!row.state_key.startsWith(scopedPrefix)) return;
+        const keys = [
+            'weeklyDDSGeneralState',
+            'weeklyDDSTriggersDateState',
+            'weeklyDDSTriggersState',
+            'weeklyDDSTriggerDetailsState',
+            'weeklyDDSFollowUpsState',
+            'weeklyDDSHistoryArchive',
+            WORKSPACE_CONFIG_STORAGE_KEY
+        ];
 
-                const localKey = row.state_key.slice(scopedPrefix.length);
-                const decision = decideBootstrapOverwrite(localKey, row);
-
-                if (!decision.overwrite) {
-                    if (decision.warn) {
-                        console.warn(`${DUAL_WRITE_LOG_PREFIX} conflict`, {
-                            context: 'bootstrapFromCloud',
-                            key: localKey,
-                            workspaceId: cloudSyncState.workspaceId,
-                            reason: decision.reason,
-                            localVersion: decision.localVersion,
-                            cloudVersion: decision.cloudVersion,
-                            localUpdatedAt: decision.localUpdatedAt,
-                            cloudUpdatedAt: decision.cloudUpdatedAt
-                        });
-                    }
-                    return;
+        await Promise.all(keys.map(async (key) => {
+            const cachedFallback = getRuntimeState(key) ?? loadState(key, null);
+            const fallback = cachedFallback === null ? undefined : cachedFallback;
+            const value = await window.DDSStorageSync.loadFromSupabase({
+                key,
+                fallback,
+                storageKey: key,
+                config,
+                workspaceId: cloudSyncState.workspaceId,
+                accessToken: cloudSyncState.accessToken,
+                useWorkspaceColumn: cloudSyncState.useWorkspaceColumn,
+                tableName: cloudSyncState.tableName,
+                localTimestamp: getLocalFreshnessMeta(key)?.updatedAt || null,
+                onCacheUpdate: (payload, row) => {
+                    setRuntimeState(key, payload);
+                    updateLocalFreshnessMeta(key, {
+                        version: toFiniteNumber(row?.version),
+                        updatedAt: String(row?.last_updated || row?.updated_at || new Date().toISOString()),
+                        source: 'cloud'
+                    });
+                },
+                onOffline: () => {
+                    setSyncIndicator('warning', 'Offline Mode - displaying cached data');
                 }
-
-                localStorage.setItem(localKey, JSON.stringify(row.payload));
-                updateLocalFreshnessMeta(localKey, {
-                    version: toFiniteNumber(row.version),
-                    updatedAt: String(row.updated_at || new Date().toISOString()),
-                    source: 'cloud'
-                });
             });
-        }
+
+            console.log('[DDS DIAG] loadFromSupabase returned', { key, value });
+
+            if (value !== undefined) {
+                setRuntimeState(key, value);
+            }
+        }));
+
+        logGeneralStateDiagnostic('weeklyDDSGeneralState after bootstrapFromCloud', {
+            state: getRuntimeState('weeklyDDSGeneralState') ?? loadState('weeklyDDSGeneralState', null)
+        });
 
         setSyncIndicator('synced', 'Cloud data loaded');
     } catch (error) {
@@ -1099,10 +1268,39 @@ function getDateStateForCurrentWeek() {
 }
 
 function loadState(key, fallback) {
+    const runtimeValue = getRuntimeState(key);
+    if (runtimeValue !== null) {
+        if (String(key) === 'weeklyDDSGeneralState') {
+            ensureRuntimeDiagStore().lastGeneralStateSource = 'runtime memory (state)';
+        }
+        return runtimeValue;
+    }
+
     try {
-        const value = localStorage.getItem(key);
-        return value ? JSON.parse(value) : fallback;
+        const parsed = window.DDSStorageSync
+            ? window.DDSStorageSync.readLocalCache(key, fallback)
+            : (() => {
+                const value = localStorage.getItem(key);
+                return value ? JSON.parse(value) : fallback;
+            })();
+        if (String(key) === 'weeklyDDSGeneralState') {
+            ensureRuntimeDiagStore().lastGeneralStateSource = 'localStorage';
+            if (!ensureRuntimeDiagStore().firstTest999Appearance && JSON.stringify(parsed).includes('TEST999')) {
+                ensureRuntimeDiagStore().firstTest999Appearance = {
+                    tag: 'loadState',
+                    location: 'localStorage',
+                    value: JSON.parse(JSON.stringify(parsed))
+                };
+            }
+        }
+        if (parsed !== undefined) {
+            setRuntimeState(key, parsed);
+        }
+        return parsed;
     } catch (error) {
+        if (String(key) === 'weeklyDDSGeneralState') {
+            ensureRuntimeDiagStore().lastGeneralStateSource = 'fallback defaults';
+        }
         return fallback;
     }
 }
@@ -1166,9 +1364,36 @@ function saveState(key, value) {
         return;
     }
 
-    localStorage.setItem(key, JSON.stringify(value));
-    updateLocalFreshnessMeta(key, { source: 'local' });
-    scheduleCloudSave(key, value);
+    setRuntimeState(key, value);
+    if (!window.DDSStorageSync) {
+        return;
+    }
+
+    window.DDSStorageSync.saveToSupabase({
+        key,
+        value,
+        storageKey: key,
+        config: window.DDS_CLOUD_CONFIG || {},
+        workspaceId: cloudSyncState.workspaceId,
+        accessToken: cloudSyncState.accessToken,
+        useWorkspaceColumn: cloudSyncState.useWorkspaceColumn,
+        tableName: cloudSyncState.tableName,
+        localTimestamp: getLocalFreshnessMeta(key)?.updatedAt || null,
+        onCacheUpdate: (payload, row) => {
+            setRuntimeState(key, payload);
+            updateLocalFreshnessMeta(key, {
+                updatedAt: String(row?.last_updated || row?.updated_at || new Date().toISOString()),
+                source: 'cloud'
+            });
+        },
+        onOffline: () => {
+            setSyncIndicator('warning', 'Offline Mode - displaying cached data');
+        }
+    }).then((ok) => {
+        if (ok) {
+            updateLocalFreshnessMeta(key, { source: 'cloud' });
+        }
+    });
 }
 
 function recordRemovalToHistory(kind, item) {
@@ -1315,6 +1540,13 @@ function archiveCurrentSnapshot(force = false) {
 function getGeneralState() {
     const currentWeekKey = getWeekKey(new Date());
     const state = loadState('weeklyDDSGeneralState', { weekKey: '', notes: {} });
+    console.log('[DDS DIAG] getGeneralState()', { currentWeekKey, stateWeekKey: state.weekKey, notes: state.notes });
+
+    logGeneralStateDiagnostic('getGeneralState before week check', {
+        currentWeekKey,
+        stateWeekKey: state.weekKey,
+        stateNotes: state.notes
+    });
 
     if (state.weekKey !== currentWeekKey) {
         const history = loadState('weeklyDDSGeneralHistory', []);
@@ -1328,7 +1560,11 @@ function getGeneralState() {
 
         archiveCurrentSnapshot(true);
         state.weekKey = currentWeekKey;
-        state.notes = {};
+        logGeneralStateDiagnostic('state.notes preserved during week rollover', {
+            currentWeekKey,
+            stateWeekKey: state.weekKey,
+            stateNotes: state.notes
+        });
         saveState('weeklyDDSGeneralState', state);
     }
 
@@ -1340,15 +1576,60 @@ function renderGeneralNotes() {
     const reminderList = document.getElementById('reminder-list');
     const notesInput = document.getElementById('general-notes-input');
 
+    logGeneralStateDiagnostic('weeklyDDSGeneralState before renderGeneralNotes', {
+        currentWeekKey: getWeekKey(new Date()),
+        stateWeekKey: state.weekKey,
+        stateNotes: state.notes
+    });
+
     reminderList.innerHTML = getReminderItems().map((item) => `<li>${item.label}</li>`).join('');
 
     const noteValue = typeof state.notes === 'string'
         ? state.notes
         : state.notes?.['combined-notes'] || Object.values(state.notes || {}).filter(Boolean).join('\n\n');
 
+    logGeneralStateDiagnostic('noteValue before notesInput.value assignment', {
+        currentWeekKey: getWeekKey(new Date()),
+        stateWeekKey: state.weekKey,
+        noteValue,
+        stateNotes: state.notes
+    });
+
+    console.log('[DDS DIAG] renderGeneralNotes call stack =', new Error('renderGeneralNotes stack').stack);
+    console.log('[DDS DIAG] renderGeneralNotes source candidate =', JSON.stringify({
+        fromSupabase: ensureRuntimeDiagStore().supabaseGeneralRecord || null,
+        fromLocalStorage: window.DDSStorageSync ? window.DDSStorageSync.readLocalCache('weeklyDDSGeneralState', null) : null,
+        fromSessionStorage: (() => {
+            try {
+                const raw = sessionStorage.getItem('weeklyDDSGeneralState');
+                return raw ? JSON.parse(raw) : null;
+            } catch (_error) {
+                return null;
+            }
+        })(),
+        fromRuntime: getRuntimeState('weeklyDDSGeneralState'),
+        fromFallbackDefaults: { weekKey: '', notes: {} },
+        selectedForRender: state,
+        noteValue
+    }));
+
     notesInput.value = noteValue || '';
+    if (String(noteValue || '').includes('TEST999') && !ensureRuntimeDiagStore().firstTest999Appearance) {
+        ensureRuntimeDiagStore().firstTest999Appearance = {
+            tag: 'renderGeneralNotes',
+            location: 'noteValue before notesInput.value',
+            value: noteValue
+        };
+    }
+    captureRuntimeSnapshot('after renderGeneralNotes assignment');
+
     notesInput.oninput = (event) => {
         state.notes = { 'combined-notes': event.target.value };
+        logGeneralStateDiagnostic('state.notes mutation from general notes input', {
+            currentWeekKey: getWeekKey(new Date()),
+            stateWeekKey: state.weekKey,
+            stateNotes: state.notes
+        });
         saveState('weeklyDDSGeneralState', state);
     };
 }
@@ -1591,11 +1872,7 @@ function renderTriggerGrid() {
         order: Number(orders[rowIndex]) || rowIndex + 1,
         sourceIndex: rowIndex,
         values: normalizedValues[rowIndex] || []
-    })).sort((a, b) => a.order - b.order);
-
-    rowEntries.forEach((row, index) => {
-        row.order = index + 1;
-    });
+    }));
 
     const head = document.getElementById('trigger-head');
     const body = document.getElementById('trigger-body');
@@ -1983,6 +2260,11 @@ function attachEventHandlers() {
         const state = getGeneralState();
         archiveCurrentSnapshot(true);
         state.notes = {};
+        logGeneralStateDiagnostic('state.notes mutation from reset-week button', {
+            currentWeekKey: getWeekKey(new Date()),
+            stateWeekKey: state.weekKey,
+            stateNotes: state.notes
+        });
         saveState('weeklyDDSGeneralState', state);
         renderGeneralNotes();
     });
@@ -2017,15 +2299,6 @@ function init() {
     cloudSyncState.useWorkspaceColumn = Boolean(config.useWorkspaceColumn);
 
     return initializeAuth(config).then(async () => {
-        if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !cloudSyncState.identityOnlyMode) {
-            await fetchCurrentUserRole();
-            if (!cloudSyncState.currentUserRole) {
-                setSyncIndicator('error', 'No workspace permission for this email');
-            }
-        }
-
-        await bootstrapFromCloud();
-
         document.getElementById('current-week-label').textContent = getWeekDisplayRange(new Date());
 
         const historyLink = document.getElementById('history-nav-link');
@@ -2041,9 +2314,8 @@ function init() {
         });
 
         attachEventHandlers();
-        renderAllSections();
-        applyPermissionMode();
-        updateAdminNavAccess();
+
+        await runAuthenticatedBootstrap();
 
         let teamList = document.getElementById('team-list');
         if (!teamList) {

@@ -139,11 +139,85 @@
                 </div>
 
             </section>
+
+            <section class="card diag-panel" aria-live="polite">
+                <div class="section-header">
+                    <div>
+                        <h2>Temporary Mobile Diagnostics</h2>
+                        <p class="diag-panel-hint">Mirrors existing [DDS DIAG] console logs on the page.</p>
+                    </div>
+                </div>
+                <pre id="diag-log-output" class="diag-log-output"></pre>
+            </section>
         </main>
     </div>
 
+    <script>
+        (function () {
+            const originalLog = console.log.bind(console);
+            const originalWarn = console.warn.bind(console);
+            const originalError = console.error.bind(console);
+            const diagBuffer = [];
+
+            function formatArg(arg) {
+                if (typeof arg === 'string') {
+                    return arg;
+                }
+
+                try {
+                    return JSON.stringify(arg, null, 2);
+                } catch (_error) {
+                    return String(arg);
+                }
+            }
+
+            function renderDiagnostics() {
+                const output = document.getElementById('diag-log-output');
+                if (!output) {
+                    return;
+                }
+
+                output.textContent = diagBuffer.join('\n\n');
+                output.scrollTop = output.scrollHeight;
+            }
+
+            function captureDiagnostics(args) {
+                const text = Array.from(args).map(formatArg).join(' ');
+                if (!text.includes('[DDS DIAG]') && !text.includes('[DDS Diagnostic]')) {
+                    return;
+                }
+
+                diagBuffer.push(text);
+                if (diagBuffer.length > 200) {
+                    diagBuffer.shift();
+                }
+
+                renderDiagnostics();
+            }
+
+            console.log = (...args) => {
+                captureDiagnostics(args);
+                return originalLog(...args);
+            };
+
+            console.warn = (...args) => {
+                captureDiagnostics(args);
+                return originalWarn(...args);
+            };
+
+            console.error = (...args) => {
+                captureDiagnostics(args);
+                return originalError(...args);
+            };
+
+            document.addEventListener('DOMContentLoaded', renderDiagnostics);
+            window.__ddsDiagRender = renderDiagnostics;
+        })();
+    </script>
+
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="cloud-config.js?v=20260802k"></script>
+    <script src="dds-storage-sync.js?v=20260803a"></script>
     <script src="script.js?v=20260802k"></script>
 </body>
 
