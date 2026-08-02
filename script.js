@@ -15,6 +15,15 @@ const DEFAULT_TRIGGER_ROWS = [
 ];
 
 const WORKSPACE_CONFIG_STORAGE_KEY = 'weeklyDDSWorkspaceConfigState';
+const LOCAL_TO_CLOUD_SYNC_KEYS = [
+    'weeklyDDSGeneralState',
+    'weeklyDDSTriggersDateState',
+    'weeklyDDSTriggersState',
+    'weeklyDDSTriggerDetailsState',
+    'weeklyDDSFollowUpsState',
+    'weeklyDDSHistoryArchive',
+    WORKSPACE_CONFIG_STORAGE_KEY
+];
 
 const teamMembers = ['Amy', 'Ben', 'Cathy', 'Diana', 'Ethan', 'Frank'];
 const followupBucketOrder = ['DDS FU', 'Command Center', 'Quality System Related', 'Others'];
@@ -109,6 +118,8 @@ function activateIdentityOnlySession(email, role) {
 }
 
 function updateAuthUi() {
+    ensureLocalSyncButton();
+
     const authInput = document.getElementById('auth-email-input');
     const loginButton = document.getElementById('auth-login-btn');
     const logoutButton = document.getElementById('auth-logout-btn');
@@ -133,6 +144,16 @@ function updateAuthUi() {
     if (authInput) {
         authInput.value = signedIn ? cloudSyncState.currentUserEmail : '';
     }
+
+    updateLocalSyncButtonState();
+}
+
+function updateLocalSyncButtonState() {
+    const syncButton = document.getElementById('sync-local-to-cloud-btn');
+    if (!syncButton) return;
+
+    const canSync = Boolean(cloudSyncState.enabled && hasWritePermission());
+    syncButton.disabled = !canSync;
 }
 
 function hasWritePermission() {
@@ -173,6 +194,8 @@ function applyPermissionMode() {
     if (addTriggerButton) {
         addTriggerButton.disabled = !canManage;
     }
+
+    updateLocalSyncButtonState();
 }
 
 function applyAuthSession(session) {
@@ -351,6 +374,13 @@ async function initializeAuth(config) {
         setAuthMessage('Sign in with your email to continue.');
     }
 
+    const syncButton = document.getElementById('sync-local-to-cloud-btn');
+    if (syncButton) {
+        syncButton.addEventListener('click', async () => {
+            await syncLocalDataToCloud();
+        });
+    }
+
     updateAuthUi();
 }
 
@@ -360,6 +390,25 @@ function setSyncIndicator(status, message) {
 
     indicator.className = `sync-status sync-${status}`;
     indicator.textContent = message;
+}
+
+function ensureLocalSyncButton() {
+    const existingButton = document.getElementById('sync-local-to-cloud-btn');
+    if (existingButton) return existingButton;
+
+    const authControls = document.querySelector('.auth-controls');
+    if (!authControls) return null;
+
+    const button = document.createElement('button');
+    button.id = 'sync-local-to-cloud-btn';
+    button.type = 'button';
+    button.textContent = 'Sync local data to cloud';
+    button.addEventListener('click', async () => {
+        await syncLocalDataToCloud();
+    });
+
+    authControls.appendChild(button);
+    return button;
 }
 
 function buildCloudHeaders() {
@@ -462,7 +511,10 @@ async function flushCloudSaves() {
             `/rest/v1/${cloudSyncState.tableName}?on_conflict=state_key`,
             {
                 method: 'POST',
-                headers: buildCloudHeaders(),
+                headers: {
+                    ...buildCloudHeaders(),
+                    Prefer: 'resolution=merge-duplicates,return=minimal'
+                },
                 body: JSON.stringify(payloadRows)
             }
         );
@@ -473,6 +525,112 @@ async function flushCloudSaves() {
             }
         });
         throw error;
+    }
+}
+
+function getLocalCloudSyncPayloadRows() {
+    const payloadRows = [];
+
+    LOCAL_TO_CLOUD_SYNC_KEYS.forEach((key) => {
+        if (key === WORKSPACE_CONFIG_STORAGE_KEY && !canManageWorkspaceContent()) {
+            return;
+        }
+
+        const rawValue = localStorage.getItem(key);
+        if (!rawValue) return;
+
+        let payload;
+        try {
+            payload = JSON.parse(rawValue);
+        } catch (_error) {
+            return;
+        }
+
+        const row = {
+            state_key: buildScopedStateKey(key),
+            payload,
+            updated_at: new Date().toISOString()
+        };
+
+        if (cloudSyncState.useWorkspaceColumn) {
+            row.workspace_id = cloudSyncState.workspaceId;
+        }
+
+        payloadRows.push(row);
+    });
+
+    return payloadRows;
+}
+
+async function syncLocalDataToCloud() {
+    if (!cloudSyncState.enabled) {
+        setAuthMessage('Cloud sync is not enabled for this workspace.', true);
+        return;
+    }
+
+    if (!hasWritePermission()) {
+        setAuthMessage('Only admin or editor can sync local data to cloud.', true);
+        return;
+    }
+
+    if (!cloudSyncState.baseUrl || !cloudSyncState.anonKey) {
+        setAuthMessage('Cloud service is not configured.', true);
+        return;
+    }
+
+    const syncButton = document.getElementById('sync-local-to-cloud-btn');
+
+    try {
+        if (syncButton) {
+            syncButton.disabled = true;
+            syncButton.textContent = 'Syncing...';
+        }
+
+        setSyncIndicator('syncing', 'Syncing local data to cloud...');
+        setAuthMessage('Syncing local data to cloud...');
+
+        if (!cloudSyncState.identityOnlyMode) {
+            await flushCloudSaves();
+        }
+
+        const payloadRows = getLocalCloudSyncPayloadRows();
+        if (!payloadRows.length) {
+            setSyncIndicator('synced', 'No local data to sync');
+            setAuthMessage('No local data found for cloud sync.');
+            return;
+        }
+
+        const response = await fetch(
+            `${cloudSyncState.baseUrl}/rest/v1/${cloudSyncState.tableName}?on_conflict=state_key`,
+            {
+                method: 'POST',
+                headers: {
+                    ...buildCloudHeaders(),
+                    Prefer: 'resolution=merge-duplicates,return=minimal'
+                },
+                body: JSON.stringify(payloadRows)
+            }
+        );
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Sync failed: ${response.status} ${errorText}`);
+        }
+
+        await bootstrapFromCloud();
+        renderAllSections();
+        applyPermissionMode();
+
+        setSyncIndicator('synced', `Cloud synced (${payloadRows.length} state keys)`);
+        setAuthMessage('Local data synced to cloud.');
+    } catch (error) {
+        setSyncIndicator('error', 'Sync failed. Local data is still safe.');
+        setAuthMessage(error?.message || 'Sync failed. Please retry.', true);
+    } finally {
+        if (syncButton) {
+            syncButton.textContent = 'Sync local data to cloud';
+        }
+        updateLocalSyncButtonState();
     }
 }
 
@@ -1562,6 +1720,13 @@ function attachEventHandlers() {
     const addTriggerButton = document.getElementById('add-trigger-row-btn');
     if (addTriggerButton) {
         addTriggerButton.addEventListener('click', addTriggerRow);
+    }
+
+    const syncLocalToCloudButton = document.getElementById('sync-local-to-cloud-btn');
+    if (syncLocalToCloudButton) {
+        syncLocalToCloudButton.addEventListener('click', () => {
+            syncLocalDataToCloud();
+        });
     }
 
     handlersAttached = true;

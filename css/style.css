@@ -180,6 +180,16 @@ body {
     background: rgba(255, 255, 255, 0.36);
 }
 
+.auth-controls #sync-local-to-cloud-btn {
+    background: rgba(255, 255, 255, 0.24);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.auth-controls #sync-local-to-cloud-btn:hover {
+    background: rgba(255, 255, 255, 0.33);
+}
+
 button {
     border: none;
     border-radius: 10px;

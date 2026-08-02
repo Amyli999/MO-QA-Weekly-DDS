@@ -1,0 +1,201 @@
+DDS history
+ 
+模块一
+ 
+ 
+General information 
+Notes
+版面设计，
+ week 
+单元格宽度满足不换行即可。
+Week
+Notes
+ details
+模块二
+  DDS trigger
+  notes 
+注意：读取
+DDS dashboard 
+模块三的数据，当
+status = close
+，
+command
+执行
+remove
+命令时才迁移到此处。
+W
+eek
+填写上周的
+week
+数和周一的日期。
+细节需求：单元格的宽度和
+DDS dashboard 
+模块
+三
+的宽度等同，
+week
+的宽度和
+status
+宽度一致。
+W
+eek
+Trigger Detail
+Next Step
+Assign To
+Due Date
+Status
+模块
+三
+  
+DDS Other Follow Ups
+注意：读取
+DDS dashboard 
+模块
+四
+的数据，当
+status = close
+，
+command
+执行
+remove
+命令时才迁移到此处
+。
+W
+eek
+填写上周的
+week
+数和周一的日期
+。
+细节需求：单元格的宽度和
+DDS dashboard 
+模块四的宽度等同，
+week
+的宽度和
+status
+宽度一致。
+W
+eek
+B
+ucket
+Task name
+Comment
+Assign To
+Due Date
+Status
+功能实现
+：每周下面的空格默认空白，列的
+第一行
+时间
+由人
+工输入
+，
+下面对应的单元格当输入
+0
+时，自动变绿色，当输入值大于
+0
+时自动变红色，
+ 
+未来的时间显示为灰色不可输入。
+Trigger
+7/6
+7/13
+7/20
+7/27
+Any customer complaints relate to DC?
+Any 
+new 
+QI/QA
+?
+Any open Q
+Is
+?
+Any product 
+on 
+hold 
+which 
+initiated by DC (> 50cs)
+?
+Any DC CCS and require validation? 
+Any 3PL vendor change or 
+3PL QA change?
+Any MO related global Policy
+/SOP
+ plan to change? 
+模块三
+ 
+ Trigger details
+功能实现
+：
+行数可以点击“
++
+”
+ 
+来增加
+triggers
+，
+status
+变成可选项
+  (Open, 
+C
+lose), 
+当
+status
+变成
+close
+时，此
+item
+在下一周
+到来时
+自动从列表中消失，
+但是信息能够被存储和查看。
+Trigger detail
+Next step
+Owner
+Due date
+Status
+模块四
+DDS 
+Other Follow Ups
+功能实现
+：
+行数可以点击“
++
+”
+ 
+来增加
+actions
+，
+status
+变成可选项
+  (Open, In progress, Close), 
+当
+status
+变成
+close
+时，此
+item
+在下一周到来时自动从列表中消失，但是信息能够被存储和查看。
+A
+ssign
+的人名只有我的团队，
+当
+task 
+被
+assign
+时，需要在
+assign 
+成功时和到
+due date 
+前两个
+working day
+给
+assigned
+的人发
+teams 
+提醒。
+Bucket
+Task name
+Assign to
+Due
+Status
+Comments
