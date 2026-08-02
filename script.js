@@ -542,10 +542,10 @@ function showWaitingForSessionState() {
 }
 
 async function runAuthenticatedBootstrap() {
-    const allowLocalIdentity = isLocalhostMode() && cloudSyncState.identityOnlyMode && Boolean(cloudSyncState.currentUserRole);
-    const mobileAuthFlow = !allowLocalIdentity && isMobileAuthDevice() && Boolean(cloudSyncState.accessToken);
+    const allowIdentityMode = cloudSyncState.identityOnlyMode && Boolean(cloudSyncState.currentUserRole);
+    const mobileAuthFlow = !allowIdentityMode && isMobileAuthDevice() && Boolean(cloudSyncState.accessToken);
 
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !allowLocalIdentity) {
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !allowIdentityMode) {
         showWaitingForSessionState();
         return false;
     }
@@ -559,10 +559,10 @@ async function runAuthenticatedBootstrap() {
         }
     }
 
-    console.log(allowLocalIdentity ? '[DDS] Local bootstrap started' : mobileAuthFlow ? '[DDS] Mobile bootstrap started' : '[DDS] Starting cloud bootstrap');
+    console.log(allowIdentityMode ? '[DDS] Identity bootstrap started' : mobileAuthFlow ? '[DDS] Mobile bootstrap started' : '[DDS] Starting cloud bootstrap');
     await bootstrapFromCloud();
     console.log('[DDS DIAG] weeklyDDSGeneralState after bootstrapFromCloud()', loadState('weeklyDDSGeneralState', { weekKey: '', notes: {} }));
-    console.log(allowLocalIdentity ? '[DDS] Local bootstrap completed' : mobileAuthFlow ? '[DDS] Mobile bootstrap completed' : '[DDS] Cloud bootstrap complete');
+    console.log(allowIdentityMode ? '[DDS] Identity bootstrap completed' : mobileAuthFlow ? '[DDS] Mobile bootstrap completed' : '[DDS] Cloud bootstrap complete');
 
     const banner = document.getElementById('permission-banner');
     if (banner) {
@@ -613,44 +613,6 @@ async function initializeAuth(config) {
         }
     });
 
-    // Support both modern code-based callback and token_hash callback for magic links.
-    const callbackUrl = new URL(window.location.href);
-    const authCode = callbackUrl.searchParams.get('code');
-    const tokenHash = callbackUrl.searchParams.get('token_hash');
-    const verifyTypeRaw = callbackUrl.searchParams.get('type');
-    const verifyType = verifyTypeRaw === 'email' || verifyTypeRaw === 'signup' || verifyTypeRaw === 'recovery' || verifyTypeRaw === 'invite' || verifyTypeRaw === 'magiclink'
-        ? verifyTypeRaw
-        : null;
-
-    try {
-        if (authCode) {
-            if (isMobileAuthDevice()) {
-                console.log('[DDS] Mobile callback detected');
-            }
-            const { error } = await cloudSyncState.authClient.auth.exchangeCodeForSession(authCode);
-            if (error) throw error;
-        } else if (tokenHash && verifyType) {
-            if (isMobileAuthDevice()) {
-                console.log('[DDS] Mobile callback detected');
-            }
-            const { error } = await cloudSyncState.authClient.auth.verifyOtp({
-                token_hash: tokenHash,
-                type: verifyType
-            });
-            if (error) throw error;
-        }
-    } catch (error) {
-        setAuthMessage(`Login failed: ${error.message || error}`, true);
-    } finally {
-        if (authCode || tokenHash || verifyTypeRaw) {
-            callbackUrl.searchParams.delete('code');
-            callbackUrl.searchParams.delete('token_hash');
-            callbackUrl.searchParams.delete('type');
-            callbackUrl.searchParams.delete('next');
-            window.history.replaceState({}, '', `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`);
-        }
-    }
-
     const authInput = document.getElementById('auth-email-input');
     const loginButton = document.getElementById('auth-login-btn');
     const logoutButton = document.getElementById('auth-logout-btn');
@@ -663,38 +625,25 @@ async function initializeAuth(config) {
                 return;
             }
 
-            if (isLocalhostMode()) {
-                console.log('[DDS] Localhost mode');
-                const role = resolveMemberRoleForEmail(email);
-                if (role) {
-                    activateIdentityOnlySession(email, role);
-                    console.log('[DDS] Local identity verified');
-                    setAuthMessage(`Identity verified: ${email} (${role})`);
-                    setSyncIndicator('synced', 'Identity verified');
-                    try {
-                        await runAuthenticatedBootstrap();
-                    } catch (error) {
-                        setAuthMessage(`Login warning: ${error.message || error}`, true);
-                    }
-                    return;
-                }
+            const role = resolveMemberRoleForEmail(email);
+            if (!role) {
+                setAuthMessage('No workspace permission for this email.', true);
+                return;
             }
 
+            if (isLocalhostMode()) {
+                console.log('[DDS] Localhost mode');
+            }
+
+            activateIdentityOnlySession(email, role);
+            console.log(isLocalhostMode() ? '[DDS] Local identity verified' : '[DDS] Identity verified');
+            setAuthMessage(`Identity verified: ${email} (${role})`);
+            setSyncIndicator('synced', 'Identity verified');
+
             try {
-                setAuthMessage('Sending login link...');
-                const redirectTo = isMobileAuthDevice()
-                    ? getMobileAuthRedirectUrl()
-                    : `${window.location.origin}${window.location.pathname}`;
-                const { error } = await cloudSyncState.authClient.auth.signInWithOtp({
-                    email,
-                    options: { emailRedirectTo: redirectTo }
-                });
-                if (error) {
-                    throw error;
-                }
-                setAuthMessage('Sign-in link sent. Check your inbox.');
+                await runAuthenticatedBootstrap();
             } catch (error) {
-                setAuthMessage(`Login failed: ${error.message || error}`, true);
+                setAuthMessage(`Login warning: ${error.message || error}`, true);
             }
         });
     }
@@ -833,7 +782,7 @@ function endSyncRequest() {
 }
 
 async function cloudFetch(path, options = {}) {
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !(isLocalhostMode() && cloudSyncState.identityOnlyMode)) {
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !(cloudSyncState.identityOnlyMode && cloudSyncState.currentUserRole)) {
         throw new Error('Sign in with your email to continue');
     }
 
@@ -1071,7 +1020,7 @@ async function bootstrapFromCloud() {
         return;
     }
 
-    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !(isLocalhostMode() && cloudSyncState.identityOnlyMode)) {
+    if (cloudSyncState.requireAuth && !cloudSyncState.accessToken && !(cloudSyncState.identityOnlyMode && cloudSyncState.currentUserRole)) {
         setSyncIndicator('error', 'Sign in with your email to continue');
         return;
     }
